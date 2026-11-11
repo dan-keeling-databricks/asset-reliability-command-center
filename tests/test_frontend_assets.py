@@ -133,3 +133,14 @@ def test_personal_sandbox_ui_has_no_shared_operator_path() -> None:
     assert "Reset activity in your sandbox only" in app_source
     assert "source_to_lakebase_latency_ms" in app_source
     assert "kafka_to_lakebase_latency_ms" not in app_source
+
+
+def test_personal_sandbox_ui_does_not_expose_genie() -> None:
+    """Keep the production-reference Genie component outside the active sandbox experience."""
+
+    app_source = (ROOT / "frontend/src/App.tsx").read_text()
+
+    assert 'import { GenieDrawer } from "./GenieDrawer"' not in app_source
+    assert "<GenieDrawer" not in app_source
+    assert "genieOpen" not in app_source
+    assert "Ask fleet telemetry" not in app_source
