@@ -1,4 +1,4 @@
-# Asset Reliability Command Center demo
+# Asset Reliability Command Centre demo
 
 ## Audience and business outcome
 
@@ -12,11 +12,13 @@ faster detection, fewer emergency repairs, and a complete audit trail from measu
 
 ## Presenter flow
 
-1. Open the command center on eight comparable pumps streaming live operating measurements.
-   Point out the live operational state and measured Kafka-to-Lakebase, Lakebase-to-App, and
+1. Open the command centre on your personal estate of eight circulatory pumps streaming live
+   operating measurements. Point out that every authenticated user receives the same isolated
+   experience, and show the measured Spark-to-Lakebase, Lakebase-to-App, and
    end-to-end latency. The status is based on real freshness and component heartbeats.
 
-2. After **Clear & restart**, P-202 and P-207 immediately produce normal transients. Each
+2. After **Clear & restart**, only your sandbox restarts. P-202 and P-207 immediately produce
+   normal transients. Each
    threshold crossing creates a visible alert and autonomously launches an independent agent
    evaluation. The presenter does not type a prompt.
 
@@ -35,31 +37,27 @@ faster detection, fewer emergency repairs, and a complete audit trail from measu
 
 6. Immediately before `submit_work_order`, Unity Gateway returns native `ASK`. The activity card
    says the action was not executed, and the agent stops. Follow the real Gateway handoff and
-   approve as the current operator; no supervisor role-play or simulated App approval is needed.
+   approve as the current user; no supervisor role-play or simulated App approval is needed.
 
 7. The exact pending request resumes once. A work order to replace the bearing is created, an
    immutable governance receipt is recorded, and the agent produces its final finding, evidence,
-   risk, and action summary. Close the review to return to the live command center with P-204
+   risk, and action summary. Close the review to return to the live command centre with P-204
    showing maintenance scheduled and both no-action histories retained.
 
-8. Open **Ask fleet telemetry**. Explain that this is a distinct, user-governed Genie Agent over
-   the continuous Unity Catalog history—not the incident-response agent. Ask a telemetry question
-   such as “Which pumps had the highest average vibration in the last 15 minutes?” Show the answer,
-   result table, generated SQL, source, and current OBO identity.
-
-9. Close on the complete journey: one Kafka stream supports both a low-latency Lakebase command
-   center and a governed SQL Lakeflow/Unity Catalog history; autonomous action is possible, but
-   the consequential write still stops at a policy-controlled human decision.
+8. Close on the complete journey: a shared RTM workload efficiently serves many isolated personal
+   sandboxes, while every consequential write still stops at a policy-controlled human decision.
+   The Architecture tab shows how production plant telemetry would replace the synthetic Rate
+   adapter with Kafka while preserving the downstream design.
 
 ## Experience invariants
 
-- The command center—not chat—is the primary screen.
+- The command centre—not chat—is the primary screen.
+- Every user sees and controls only their personal sandbox.
 - Alerts formulate the initiating prompt and start agent evaluations automatically.
 - The UI never predicts a model call, Skill, MCP server, tool, tool order, or tool-call count.
 - Every actual tool call appears as its own activity event.
 - The incident footer shows only total tokens, estimated cost, and tool calls.
 - Independent incidents can execute concurrently.
 - Unity Gateway is the sole approval authority.
-- Genie uses OBO user permissions and reads only continuous telemetry history.
-- Genie conversations survive command-center scenario restarts and expose no scenario concepts.
-- **Clear & restart** cancels old agent activity before creating the new scenario.
+- **Clear & restart** cancels only that sandbox's old agent activity before creating its new
+  scenario.
