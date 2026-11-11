@@ -1,5 +1,8 @@
 # Unity Catalog and Lakebase executed query results
 
+> Historical Kafka-build record from 2026-10-12; this does not claim execution by the later
+> personal-sandbox Spark Rate deployment.
+
 ## Unity Catalog governed history
 
 The SQL warehouse returned these counts:

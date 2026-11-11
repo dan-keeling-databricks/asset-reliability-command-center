@@ -1,5 +1,8 @@
 # Autonomous agent incident-review and work-order execution log
 
+> Historical Kafka-build record from 2026-10-12; this does not claim execution by the later
+> personal-sandbox Spark Rate deployment.
+
 The one-second App evaluator detected a real Lakebase threshold breach and started this run
 without a presenter-authored prompt.
 
