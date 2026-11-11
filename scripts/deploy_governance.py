@@ -13,7 +13,13 @@ from urllib.parse import urlparse
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.errors import NotFound
 from databricks.sdk.service.apps import AppAccessControlRequest, AppPermissionLevel
-from databricks.sdk.service.catalog import ConnectionType, ProvisioningInfoState
+from databricks.sdk.service.catalog import (
+    ConnectionType,
+    PermissionsChange,
+    Privilege,
+    ProvisioningInfoState,
+    SecurableType,
+)
 
 from backend.gateway import GatewayAsk, GovernedGatewayClient
 
@@ -38,6 +44,7 @@ TOOLS = [
     "prepare_work_order",
     "submit_work_order",
 ]
+UC_AUDIENCE = os.getenv("ASSET_RELIABILITY_UC_AUDIENCE", "account users")
 
 
 def ensure_source_app_permission(client: WorkspaceClient, app) -> bool:
@@ -269,6 +276,31 @@ def ensure_service(
     raise RuntimeError("Unity Gateway service did not converge to the declared configuration")
 
 
+def ensure_user_permissions(client: WorkspaceClient) -> list[str]:
+    """Grant the App's broad audience only the UC privileges needed by the agent.
+
+    Databricks Apps admits the workspace-local ``users`` group. Unity Catalog uses the special
+    ``account users`` principal for the corresponding account-wide audience, while the App ACL
+    remains the narrower workspace admission boundary.
+    """
+
+    grants = (
+        (SecurableType.CATALOG, CATALOG, Privilege.USE_CATALOG),
+        (SecurableType.SCHEMA, f"{CATALOG}.{SCHEMA}", Privilege.USE_SCHEMA),
+        (SecurableType.SKILL, SKILL_FQN, Privilege.READ_VOLUME),
+        (SecurableType.MCP_SERVICE, SERVICE_FQN, Privilege.EXECUTE),
+    )
+    applied: list[str] = []
+    for securable_type, full_name, privilege in grants:
+        client.grants.update(
+            securable_type.value,
+            full_name,
+            changes=[PermissionsChange(principal=UC_AUDIENCE, add=[privilege])],
+        )
+        applied.append(f"{securable_type.value}:{full_name}:{privilege.value}")
+    return applied
+
+
 async def probe_submit_policy(
     client: WorkspaceClient,
     *,
@@ -297,12 +329,15 @@ async def probe_submit_policy(
                         "Gateway tool discovery did not match the exact declared tool set"
                     )
 
-                telemetry = await gateway.call_tool(
-                    "get_asset_telemetry", {"asset_id": "P-204"}, token
-                )
-                result = telemetry.get("result", {})
-                if result.get("isError") is True or telemetry.get("error"):
-                    raise RuntimeError("Benign source authentication probe failed")
+                try:
+                    await gateway.call_tool(
+                        "get_asset_telemetry", {"asset_id": "P-204"}, token
+                    )
+                except RuntimeError as exc:
+                    if "run context" not in str(exc).casefold():
+                        raise RuntimeError("Unexpected source context-guard failure") from exc
+                else:
+                    raise RuntimeError("Context-free source call was not rejected")
 
                 try:
                     await gateway.call_tool(
@@ -318,7 +353,7 @@ async def probe_submit_policy(
                 except GatewayAsk as ask:
                     return {
                         "tools": discovered,
-                        "source_authentication": "verified",
+                        "source_context_guard": "verified",
                         "decision": "ASK",
                         "elicitation_id": ask.elicitation.elicitation_id,
                         "execution": "not executed",
@@ -346,6 +381,7 @@ def main() -> None:
     skill = deploy_skill(client)
     connection, connection_status = ensure_connection(client, app)
     service, service_status = ensure_service(client, function.function_id)
+    user_permissions = ensure_user_permissions(client)
     policy_probe = asyncio.run(probe_submit_policy(client))
 
     print(
@@ -357,6 +393,7 @@ def main() -> None:
                 "connection_status": connection_status,
                 "service": service.get("name"),
                 "service_status": service_status,
+                "user_permissions": user_permissions,
                 "gateway_url": f"{client.config.host}/ai-gateway/mcp-services/{SERVICE_FQN}",
                 "policy": POLICY_FQN,
                 "tools": TOOLS,
