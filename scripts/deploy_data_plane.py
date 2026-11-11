@@ -1,11 +1,10 @@
-"""Validate and dependency-order deployment of the governed telemetry data plane.
+"""Validate and dependency-order deployment of the personal-sandbox data plane.
 
-The helper deliberately performs three deployment phases. First it grants the existing App
-service principal the minimum privileges required by the workloads and runs the idempotent
-Lakebase migration as that schema-owning identity. It then deploys and restarts the continuous
-data-plane jobs and waits for a *new* pipeline update to publish the curated view. Only after
-the view exists does it grant human read access and deploy the Genie space and App binding.
-This ordering prevents both first-deployment and schema-upgrade races.
+The helper first grants the existing App service principal the minimum workload privileges and
+runs the idempotent Lakebase migration as that schema-owning identity. It then deploys the full
+bundle, stops the obsolete Kafka producer and governed-history pipeline runner, and starts only
+the shared Spark Rate Real-Time Mode job. This ordering keeps the old writer compatible until the
+additive migration is complete and prevents paused reference workloads from continuing to run.
 """
 
 from __future__ import annotations
@@ -18,15 +17,15 @@ from pathlib import Path
 from typing import Any
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_ACCESS_GROUP = "asset-reliability-command-center-operator"
+DEFAULT_ACCESS_GROUP = "users"
 DEFAULT_TIMEOUT_SECONDS = 1_200
-PIPELINE_KEY = "governed_telemetry_history"
-PIPELINE_RUNNER_KEY = "governed_telemetry_history_continuous"
 COMPUTE_POLICY_KEY = "asset_reliability_workloads"
 LAKEBASE_MIGRATION_KEY = "migrate_lakebase_schema"
-CURATED_VIEW = "pump_telemetry_history"
-FAILED_UPDATE_STATES = {"CANCELED", "FAILED"}
-READY_UPDATE_STATES = {"COMPLETED", "RUNNING"}
+RATE_JOB_KEY = "telemetry_rtm"
+OBSOLETE_CONTINUOUS_JOB_KEYS = (
+    "telemetry_producer",
+    "governed_telemetry_history_continuous",
+)
 
 
 def run(
@@ -190,35 +189,6 @@ def grant_bundle_source_read(args: argparse.Namespace) -> None:
     )
 
 
-def current_pipeline_update_ids(args: argparse.Namespace) -> set[str]:
-    """Return update IDs already known before this deployment, or an empty set initially."""
-
-    try:
-        pipeline_id = resource_id(args, "pipelines", PIPELINE_KEY)
-        pipeline = run_json(
-            workspace_command(args, "pipelines", "get", pipeline_id, "--output", "json")
-        )
-    except (RuntimeError, subprocess.CalledProcessError, json.JSONDecodeError):
-        return set()
-    return {
-        str(update["update_id"])
-        for update in pipeline.get("latest_updates", [])
-        if update.get("update_id")
-    }
-
-
-def view_exists(args: argparse.Namespace) -> bool:
-    """Check for the curated UC view without treating absence during startup as an error."""
-
-    view_name = f"{args.catalog}.{args.schema}.{CURATED_VIEW}"
-    result = run(
-        workspace_command(args, "tables", "get", view_name, "--output", "json"),
-        capture=True,
-        check=False,
-    )
-    return result.returncode == 0
-
-
 def verify_compute_policy_access(args: argparse.Namespace) -> None:
     """Verify the App SP has only the required CAN_USE binding on the managed policy."""
 
@@ -261,43 +231,6 @@ def verify_compute_policy_access(args: argparse.Namespace) -> None:
     )
 
 
-def wait_for_pipeline_publication(
-    args: argparse.Namespace, previous_update_ids: set[str]
-) -> None:
-    """Wait for a new healthy update and the curated view, failing fast on update failure."""
-
-    pipeline_id = resource_id(args, "pipelines", PIPELINE_KEY)
-    deadline = time.monotonic() + args.timeout_seconds
-    last_state = "not started"
-
-    while time.monotonic() < deadline:
-        pipeline = run_json(
-            workspace_command(args, "pipelines", "get", pipeline_id, "--output", "json")
-        )
-        new_updates = [
-            update
-            for update in pipeline.get("latest_updates", [])
-            if update.get("update_id") not in previous_update_ids
-        ]
-        if new_updates:
-            newest = new_updates[0]
-            last_state = str(newest.get("state", "UNKNOWN"))
-            if last_state in FAILED_UPDATE_STATES:
-                raise RuntimeError(
-                    f"Pipeline update {newest.get('update_id')} ended in {last_state}"
-                )
-            if last_state in READY_UPDATE_STATES and view_exists(args):
-                return
-        else:
-            last_state = str(pipeline.get("state", "waiting for a new update"))
-        time.sleep(args.poll_seconds)
-
-    raise TimeoutError(
-        f"Timed out after {args.timeout_seconds}s waiting for a new pipeline update and "
-        f"{args.catalog}.{args.schema}.{CURATED_VIEW}; last state was {last_state}"
-    )
-
-
 def selective_deploy(args: argparse.Namespace, *resources: str) -> None:
     """Deploy an explicit resource phase and its referenced dependencies."""
 
@@ -318,6 +251,95 @@ def restart_continuous_job(args: argparse.Namespace, resource_key: str) -> None:
     run(bundle_command("run", args, resource_key, "--restart", "--no-wait"))
 
 
+def active_job_runs(args: argparse.Namespace, resource_key: str) -> list[dict[str, Any]]:
+    """Return active runs for one deployed bundle job."""
+
+    job_id = resource_id(args, "jobs", resource_key)
+    payload = run_json(
+        workspace_command(
+            args,
+            "jobs",
+            "list-runs",
+            "--job-id",
+            job_id,
+            "--active-only",
+            "--limit",
+            "25",
+            "--output",
+            "json",
+        )
+    )
+    runs = payload.get("runs", [])
+    if not isinstance(runs, list):
+        raise RuntimeError(f"Unexpected active-run response for bundle job {resource_key}")
+    return [run_payload for run_payload in runs if isinstance(run_payload, dict)]
+
+
+def stop_obsolete_continuous_job(args: argparse.Namespace, resource_key: str) -> None:
+    """Cancel every active or queued run after the bundle has paused an obsolete job."""
+
+    job_id = resource_id(args, "jobs", resource_key)
+    run(
+        workspace_command(
+            args,
+            "jobs",
+            "cancel-all-runs",
+            "--job-id",
+            job_id,
+            "--all-queued-runs",
+        )
+    )
+
+    deadline = time.monotonic() + args.timeout_seconds
+    while time.monotonic() < deadline:
+        if not active_job_runs(args, resource_key):
+            return
+        time.sleep(args.poll_seconds)
+    raise TimeoutError(
+        f"Timed out after {args.timeout_seconds}s stopping obsolete job {resource_key}"
+    )
+
+
+def wait_for_current_rate_run(
+    args: argparse.Namespace,
+    *,
+    restart_requested_at_ms: int,
+    previous_run_ids: set[str],
+) -> dict[str, Any]:
+    """Require a newly started shared Rate RTM parent run to reach RUNNING.
+
+    A RUNNING job by itself does not prove fresh Lakebase telemetry. The authenticated App health
+    and sandbox acceptance checks perform that verification after the App has been deployed.
+    """
+
+    deadline = time.monotonic() + args.timeout_seconds
+    last_states: list[str] = []
+    while time.monotonic() < deadline:
+        runs = active_job_runs(args, RATE_JOB_KEY)
+        last_states = [
+            str((run_payload.get("state") or {}).get("life_cycle_state", "UNKNOWN"))
+            for run_payload in runs
+        ]
+        for run_payload in runs:
+            state = str((run_payload.get("state") or {}).get("life_cycle_state", "UNKNOWN"))
+            start_time = int(run_payload.get("start_time") or 0)
+            run_id = str(run_payload.get("run_id") or "")
+            # Continuous-job replacement can overlap the old canceling parent. Requiring a start
+            # time near this restart request and a new run ID prevents an older RUNNING parent from
+            # satisfying the gate while allowing for small client/workspace clock skew.
+            if (
+                state == "RUNNING"
+                and run_id not in previous_run_ids
+                and start_time >= restart_requested_at_ms - 60_000
+            ):
+                return run_payload
+        time.sleep(args.poll_seconds)
+    raise TimeoutError(
+        f"Timed out after {args.timeout_seconds}s waiting for {RATE_JOB_KEY}; "
+        f"last active states were {last_states or ['none']}"
+    )
+
+
 def deploy(args: argparse.Namespace) -> None:
     """Execute the ordered, idempotent data-plane deployment protocol."""
 
@@ -332,32 +354,42 @@ def deploy(args: argparse.Namespace) -> None:
     run(bundle_command("run", args, "setup_runtime_principal_access"))
     verify_compute_policy_access(args)
     grant_bundle_source_read(args)
-    # This checked run is the hard schema barrier. The producer and RTM restart calls below
-    # are unreachable if App-SP authentication, migration DDL, or contract verification fails.
+    # This checked run is the hard schema barrier. No workload replacement or cancellation below
+    # is reachable if App-SP authentication, migration DDL, or contract verification fails.
     run(bundle_command("run", args, LAKEBASE_MIGRATION_KEY))
 
-    previous_update_ids = current_pipeline_update_ids(args)
-
-    # Phase 2 can now switch the continuous workloads to the App SP. The pipeline runner is a
-    # continuous Lakeflow Job because modern bundles drop the deprecated pipeline-level flag.
-    selective_deploy(
-        args,
-        "pipelines.governed_telemetry_history",
-        "jobs.governed_telemetry_history_continuous",
-        "jobs.setup_telemetry_access",
-        "jobs.telemetry_producer",
-        "jobs.telemetry_rtm",
-    )
-    grant_bundle_source_read(args)
-    restart_continuous_job(args, "telemetry_producer")
-    restart_continuous_job(args, "telemetry_rtm")
-    restart_continuous_job(args, PIPELINE_RUNNER_KEY)
-    wait_for_pipeline_publication(args, previous_update_ids)
-
-    # Human OBO access is applied only after publication. The final full deployment can then
-    # safely create/update Genie and bind it to the App without a missing data source.
-    run(bundle_command("run", args, "setup_telemetry_access"))
+    # The full resource deployment changes the legacy continuous resources to PAUSED before they
+    # are canceled. The governed-history assets remain available as a production reference, but
+    # are not part of the active synthetic demo or its readiness gate.
     run(bundle_command("deploy", args, "--auto-approve"))
+    grant_bundle_source_read(args)
+    for resource_key in OBSOLETE_CONTINUOUS_JOB_KEYS:
+        stop_obsolete_continuous_job(args, resource_key)
+    previous_rate_run_ids = {
+        str(run_payload.get("run_id"))
+        for run_payload in active_job_runs(args, RATE_JOB_KEY)
+        if run_payload.get("run_id") is not None
+    }
+    restart_requested_at_ms = int(time.time() * 1000)
+    restart_continuous_job(args, RATE_JOB_KEY)
+    active_rate_run = wait_for_current_rate_run(
+        args,
+        restart_requested_at_ms=restart_requested_at_ms,
+        previous_run_ids=previous_rate_run_ids,
+    )
+    print(
+        json.dumps(
+            {
+                "rate_rtm_job": RATE_JOB_KEY,
+                "run_id": active_rate_run.get("run_id"),
+                "start_time": active_rate_run.get("start_time"),
+                "life_cycle_state": "RUNNING",
+                "telemetry_freshness_verified": False,
+                "next_gate": "authenticated App health and sandbox telemetry acceptance",
+            },
+            sort_keys=True,
+        )
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -367,7 +399,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--access-group",
         default=DEFAULT_ACCESS_GROUP,
-        help="Existing workspace group; this helper never creates groups.",
+        help="Existing App-admission group; this helper never creates groups or product roles.",
     )
     parser.add_argument(
         "--app-service-principal-client-id",
@@ -388,13 +420,13 @@ def parse_args() -> argparse.Namespace:
         "--timeout-seconds",
         type=int,
         default=DEFAULT_TIMEOUT_SECONDS,
-        help="Maximum wait for a new pipeline update and curated view.",
+        help="Maximum wait for obsolete jobs to stop and Rate RTM to reach RUNNING.",
     )
     parser.add_argument(
         "--poll-seconds",
         type=float,
         default=10.0,
-        help="Pipeline publication polling interval.",
+        help="Continuous-job state polling interval.",
     )
     parser.add_argument(
         "--deploy",

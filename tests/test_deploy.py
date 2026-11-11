@@ -37,8 +37,8 @@ def test_deployment_steps_are_explicit_and_dependency_ordered() -> None:
     labels = [step.label for step in steps]
 
     assert labels == [
-        "Deploy the governed data plane in readiness-gated phases",
-        "Deploy the App snapshot after Genie and telemetry are ready",
+        "Deploy the personal-sandbox Rate data plane in readiness-gated phases",
+        "Deploy the App snapshot after Rate telemetry is ready",
         "Create or update the Unity Gateway policy function",
         "Reconcile the Skill, MCP source, service, selectors, and ASK policy",
     ]

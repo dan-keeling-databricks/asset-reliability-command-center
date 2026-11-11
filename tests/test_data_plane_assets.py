@@ -13,6 +13,8 @@ from scripts import deploy_data_plane
 
 ROOT = Path(__file__).resolve().parents[1]
 PIPELINE = ROOT / "src" / "pipelines" / "governed_telemetry_history.sql"
+RATE_RTM = ROOT / "src" / "streaming" / "rate_to_lakebase_rtm.py"
+KAFKA_RTM_REFERENCE = ROOT / "src" / "streaming" / "kafka_to_lakebase_rtm.py"
 LAKEBASE_MIGRATION = ROOT / "src" / "migrations" / "apply_lakebase_schema.py"
 GENIE = ROOT / "genie" / "fleet_telemetry_analyst.geniespace.json"
 
@@ -137,7 +139,8 @@ def test_bundle_uses_classic_pipeline_native_genie_and_obo_scope() -> None:
     assert "continuous: true" not in bundle
     assert "governed_telemetry_history_continuous:" in bundle
     assert "pipeline_id: ${resources.pipelines.governed_telemetry_history.id}" in bundle
-    assert "pause_status: UNPAUSED" in bundle
+    assert bundle.count("pause_status: UNPAUSED") == 1
+    assert bundle.count("pause_status: PAUSED") == 2
     assert "level: CAN_RUN" in bundle
     assert "node_type_id: ${var.telemetry_pipeline_node_type}" in bundle
     assert "fleet_telemetry_analyst:" in bundle
@@ -153,6 +156,7 @@ def test_bundle_uses_classic_pipeline_native_genie_and_obo_scope() -> None:
     # standalone job clusters still set SINGLE_USER explicitly in their resource definitions.
     assert '"data_security_mode": {' not in bundle
     assert bundle.count("data_security_mode: SINGLE_USER") == 3
+    assert "runtime_engine: STANDARD" in bundle
     assert "trigger_interval: 10 seconds" in bundle
     assert bundle.count(
         "policy_id: ${resources.cluster_policies.asset_reliability_workloads.id}"
@@ -163,6 +167,50 @@ def test_bundle_uses_classic_pipeline_native_genie_and_obo_scope() -> None:
     assert "GENIE_SOURCE_LABEL" in app
     assert "valueFrom: fleet-telemetry-genie" in app
     assert "dan.keeling@" not in app
+
+
+def test_rate_rtm_is_the_only_active_synthetic_source() -> None:
+    bundle = (ROOT / "databricks.yml").read_text()
+    source = RATE_RTM.read_text()
+    active_job = bundle.split("    telemetry_rtm:", maxsplit=1)[1].split(
+        "    governed_telemetry_history_continuous:", maxsplit=1
+    )[0]
+
+    assert RATE_RTM.is_file()
+    assert KAFKA_RTM_REFERENCE.is_file()
+    assert "notebook_path: ./src/streaming/rate_to_lakebase_rtm.py" in active_job
+    assert 'spark.readStream.format("rate")' in source
+    assert '.option("rowsPerSecond", ROWS_PER_SECOND)' in source
+    assert '.option("numPartitions", SOURCE_PARTITIONS)' in source
+    assert 'F.lit("spark-rate-demo").alias("source")' in source
+    assert "generator_slot" in source
+    assert "pump_index" in source
+    assert "sequence" in source
+    assert "pmod" in source
+    assert "floor" in source
+    assert 'format("postgresql")' in source
+    assert '.outputMode("update")' in source
+    assert '.option("batchinterval", "100 milliseconds")' in source
+    assert "/Volumes/" in source
+    assert ".trigger(realTime=" in source
+    assert 'format("kafka")' not in source
+    assert "kafka_bootstrap" not in active_job
+    assert "kafka_topic" not in active_job
+
+
+def test_app_admission_uses_broad_group_without_product_roles() -> None:
+    bundle = (ROOT / "databricks.yml").read_text()
+    app_resource = bundle.split("    command_center:", maxsplit=1)[1].split(
+        "targets:", maxsplit=1
+    )[0]
+
+    assert "app_access_group:" in bundle
+    assert "default: users" in bundle
+    assert "level: CAN_USE" in app_resource
+    assert "group_name: ${var.app_access_group}" in app_resource
+    assert "group_name: ${var.app_access_group}" not in bundle.split(
+        "  apps:", maxsplit=1
+    )[0]
 
 
 def test_lakebase_migration_runs_as_app_sp_and_verifies_runtime_contract() -> None:
@@ -214,7 +262,7 @@ def test_runtime_principal_grant_is_minimal_and_idempotent() -> None:
     assert "ALL PRIVILEGES" not in grants
 
 
-def test_deployment_helper_orders_identity_pipeline_grant_and_genie(monkeypatch) -> None:
+def test_deployment_helper_migrates_stops_legacy_and_starts_rate(monkeypatch) -> None:
     events: list[tuple[object, ...]] = []
     args = Namespace(
         profile="explicit-profile",
@@ -239,11 +287,6 @@ def test_deployment_helper_orders_identity_pipeline_grant_and_genie(monkeypatch)
     )
     monkeypatch.setattr(
         deploy_data_plane,
-        "current_pipeline_update_ids",
-        lambda _args: events.append(("capture_updates",)) or {"old-update"},
-    )
-    monkeypatch.setattr(
-        deploy_data_plane,
         "verify_compute_policy_access",
         lambda _args: events.append(("verify_policy",)),
     )
@@ -254,13 +297,24 @@ def test_deployment_helper_orders_identity_pipeline_grant_and_genie(monkeypatch)
     )
     monkeypatch.setattr(
         deploy_data_plane,
+        "stop_obsolete_continuous_job",
+        lambda _args, key: events.append(("stop", key)),
+    )
+    monkeypatch.setattr(
+        deploy_data_plane,
         "grant_bundle_source_read",
         lambda _args: events.append(("grant_source_read",)),
     )
     monkeypatch.setattr(
         deploy_data_plane,
-        "wait_for_pipeline_publication",
-        lambda _args, updates: events.append(("wait", *sorted(updates))),
+        "wait_for_current_rate_run",
+        lambda _args, **_kwargs: events.append(("wait_rate",))
+        or {"run_id": 123, "start_time": 456},
+    )
+    monkeypatch.setattr(
+        deploy_data_plane,
+        "active_job_runs",
+        lambda _args, _key: [],
     )
 
     deploy_data_plane.deploy(args)
@@ -272,15 +326,12 @@ def test_deployment_helper_orders_identity_pipeline_grant_and_genie(monkeypatch)
         "verify_policy",
         "grant_source_read",
         "run",
-        "capture_updates",
-        "select",
+        "run",
         "grant_source_read",
+        "stop",
+        "stop",
         "restart",
-        "restart",
-        "restart",
-        "wait",
-        "run",
-        "run",
+        "wait_rate",
     ]
     assert events[0] == (
         "select",
@@ -289,13 +340,30 @@ def test_deployment_helper_orders_identity_pipeline_grant_and_genie(monkeypatch)
         "jobs.migrate_lakebase_schema",
     )
     assert "migrate_lakebase_schema" in events[4]
-    assert events[8:11] == [
-        ("restart", "telemetry_producer"),
-        ("restart", "telemetry_rtm"),
-        ("restart", "governed_telemetry_history_continuous"),
+    assert events[5] == (
+        "run",
+        "databricks",
+        "bundle",
+        "deploy",
+        "--target",
+        "dev",
+        "--profile",
+        "explicit-profile",
+        "--var",
+        "app_access_group=existing-group",
+        "--var",
+        "app_service_principal_client_id=existing-app-sp",
+        "--var",
+        "catalog=catalog",
+        "--var",
+        "schema=schema",
+        "--auto-approve",
+    )
+    assert events[7:9] == [
+        ("stop", "telemetry_producer"),
+        ("stop", "governed_telemetry_history_continuous"),
     ]
-    assert "setup_telemetry_access" in events[12]
-    assert events[-1][-1] == "--auto-approve"
+    assert events[9:] == [("restart", "telemetry_rtm"), ("wait_rate",)]
 
 
 def test_migration_failure_prevents_every_continuous_restart(monkeypatch) -> None:
@@ -392,22 +460,40 @@ def test_bundle_source_read_is_derived_granted_and_verified(monkeypatch) -> None
     ]
 
 
-def test_publication_wait_requires_new_healthy_update_and_view(monkeypatch) -> None:
+def test_current_rate_run_must_start_after_restart_request(monkeypatch) -> None:
     args = Namespace(
         profile="explicit-profile",
-        catalog="catalog",
-        schema="schema",
         timeout_seconds=1,
         poll_seconds=0,
     )
-    monkeypatch.setattr(deploy_data_plane, "resource_id", lambda *_args: "pipeline-id")
+    responses = iter(
+        [
+            [
+                {
+                    "run_id": 1,
+                    "start_time": 1_000,
+                    "state": {"life_cycle_state": "RUNNING"},
+                }
+            ],
+            [
+                {
+                    "run_id": 2,
+                    "start_time": 100_000,
+                    "state": {"life_cycle_state": "RUNNING"},
+                }
+            ],
+        ]
+    )
     monkeypatch.setattr(
         deploy_data_plane,
-        "run_json",
-        lambda _command: {
-            "latest_updates": [{"update_id": "new-update", "state": "RUNNING"}]
-        },
+        "active_job_runs",
+        lambda _args, _key: next(responses),
     )
-    monkeypatch.setattr(deploy_data_plane, "view_exists", lambda _args: True)
 
-    deploy_data_plane.wait_for_pipeline_publication(args, {"old-update"})
+    run_payload = deploy_data_plane.wait_for_current_rate_run(
+        args,
+        restart_requested_at_ms=100_000,
+        previous_run_ids={"1"},
+    )
+
+    assert run_payload["run_id"] == 2
