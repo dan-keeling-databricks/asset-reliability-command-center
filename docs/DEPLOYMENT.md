@@ -56,7 +56,8 @@ The current development environment is:
 | App | `asset-reliability-center` |
 | Catalog | `classic_stable_realtime_demos_catalog` |
 | Schema | `asset_reliability_command_center` |
-| Existing group | `asset-reliability-command-center-operator` (`84285700224068`) |
+| App admission group | Built-in workspace `users` group |
+| Governed-history reference group | `asset-reliability-command-center-operator` (`84285700224068`) |
 | Lakebase project | `asset-reliability-command-center` |
 
 These are command inputs, not identities embedded in application logic. Use the values for the
@@ -85,7 +86,7 @@ uv run python scripts/deploy.py \
   --profile fe_vm_rtm \
   --target dev \
   --expected-host https://fevm-classic-stable-realtime-demos.cloud.databricks.com \
-  --access-group asset-reliability-command-center-operator \
+  --access-group users \
   --catalog classic_stable_realtime_demos_catalog \
   --schema asset_reliability_command_center \
   --app-name asset-reliability-center \
@@ -119,7 +120,7 @@ uv run python scripts/deploy.py \
   --profile fe_vm_rtm \
   --target dev \
   --expected-host https://fevm-classic-stable-realtime-demos.cloud.databricks.com \
-  --access-group asset-reliability-command-center-operator \
+  --access-group users \
   --catalog classic_stable_realtime_demos_catalog \
   --schema asset_reliability_command_center \
   --app-name asset-reliability-center \
@@ -157,7 +158,7 @@ uv run python scripts/deploy.py \
   --profile fe_vm_rtm \
   --target dev \
   --expected-host https://fevm-classic-stable-realtime-demos.cloud.databricks.com \
-  --access-group asset-reliability-command-center-operator \
+  --access-group users \
   --catalog classic_stable_realtime_demos_catalog \
   --schema asset_reliability_command_center \
   --app-name asset-reliability-center \

@@ -195,7 +195,7 @@ uv run python scripts/deploy.py \
   --profile fe_vm_rtm \
   --target dev \
   --expected-host https://fevm-classic-stable-realtime-demos.cloud.databricks.com \
-  --access-group asset-reliability-command-center-operator \
+  --access-group users \
   --catalog classic_stable_realtime_demos_catalog \
   --schema asset_reliability_command_center \
   --app-name asset-reliability-center
