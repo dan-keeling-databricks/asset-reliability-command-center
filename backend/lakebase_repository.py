@@ -13,10 +13,11 @@ import os
 import re
 import secrets
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 from uuid import uuid4
 
 import psycopg
@@ -44,6 +45,9 @@ from backend.models import (
 )
 
 RTM_FRESHNESS_SECONDS = 15
+DEADLOCK_RETRY_ATTEMPTS = 3
+DEADLOCK_RETRY_BASE_SECONDS = 0.05
+T = TypeVar("T")
 
 
 @dataclass(frozen=True)
@@ -118,6 +122,18 @@ class LakebaseCommandCenterRepository:
 
     def table(self, name: str) -> sql.Composed:
         return sql.SQL("{}.{}").format(sql.Identifier(self.schema), sql.Identifier(name))
+
+    async def _retry_deadlock(self, operation: Callable[[], Awaitable[T]]) -> T:
+        """Retry an idempotent transaction after PostgreSQL chooses it as deadlock victim."""
+
+        for attempt in range(DEADLOCK_RETRY_ATTEMPTS):
+            try:
+                return await operation()
+            except psycopg.errors.DeadlockDetected:
+                if attempt == DEADLOCK_RETRY_ATTEMPTS - 1:
+                    raise
+                await asyncio.sleep(DEADLOCK_RETRY_BASE_SECONDS * (2**attempt))
+        raise AssertionError("Deadlock retry loop exhausted without returning or raising")
 
     async def start(self) -> None:
         """Open the pool, apply idempotent schema setup, then start maintenance tasks."""
@@ -228,6 +244,16 @@ class LakebaseCommandCenterRepository:
         active scenario but never deletes incidents, receipts, work orders, or telemetry.
         """
 
+        return await self._retry_deadlock(lambda: self._resolve_sandbox_once(user))
+
+    async def _resolve_sandbox_once(self, user: AppUser) -> SandboxState:
+        """Run one idempotent sandbox-resolution transaction.
+
+        Parent rows use ``FOR NO KEY UPDATE`` because the transaction never changes their UUID
+        keys. That lock still serializes lease/scenario mutations while remaining compatible with
+        the foreign-key key-share locks acquired by concurrent telemetry and agent transactions.
+        """
+
         sandbox_id = uuid4()
         scenario_id = uuid4()
         async with self._pool.connection() as connection:
@@ -247,7 +273,7 @@ class LakebaseCommandCenterRepository:
                 existing = await (
                     await connection.execute(
                         sql.SQL(
-                            "SELECT * FROM {} WHERE owner_email = %s FOR UPDATE"
+                            "SELECT * FROM {} WHERE owner_email = %s FOR NO KEY UPDATE"
                         ).format(self.table("sandboxes")),
                         (user.email,),
                     )
@@ -364,7 +390,7 @@ class LakebaseCommandCenterRepository:
                     await connection.execute(
                         sql.SQL(
                             "SELECT scenario_id FROM {} WHERE sandbox_id = %s "
-                            "AND status = 'active' FOR UPDATE"
+                            "AND status = 'active' FOR NO KEY UPDATE"
                         ).format(self.table("scenario_runs")),
                         (sandbox_id,),
                     )
@@ -1150,6 +1176,21 @@ class LakebaseCommandCenterRepository:
 
         raw_context = secrets.token_urlsafe(32)
         digest = hashlib.sha256(raw_context.encode()).hexdigest()
+        return await self._retry_deadlock(
+            lambda: self._create_run_context_once(
+                incident_id, sandbox_id, raw_context, digest
+            )
+        )
+
+    async def _create_run_context_once(
+        self,
+        incident_id: str,
+        sandbox_id: str,
+        raw_context: str,
+        digest: str,
+    ) -> str:
+        """Persist one retry-stable run capability in a single transaction."""
+
         async with self._pool.connection() as connection:
             async with connection.transaction():
                 row = await (
