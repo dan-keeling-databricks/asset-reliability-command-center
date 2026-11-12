@@ -300,6 +300,8 @@ def test_schema_defines_rate_slot_resolution_and_personal_sandbox_isolation() ->
     assert "CREATE TABLE IF NOT EXISTS asset_reliability.sandbox_slots" in schema
     assert "CREATE TABLE IF NOT EXISTS asset_reliability.sandbox_controls" in schema
     assert "one_active_scenario_per_sandbox" in schema
+    assert "CREATE UNIQUE INDEX IF NOT EXISTS one_active_asset_reliability_scenario" not in schema
+    assert "DROP INDEX IF EXISTS asset_reliability.one_active_asset_reliability_scenario" in schema
     assert "resolve_personal_sandbox_telemetry" in schema
     assert "RETURN NULL" in schema
     assert "GREATEST(0, EXTRACT(EPOCH" in schema

@@ -39,10 +39,6 @@ CREATE TABLE IF NOT EXISTS asset_reliability.scenario_runs (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS one_active_asset_reliability_scenario
-    ON asset_reliability.scenario_runs ((status))
-    WHERE status = 'active';
-
 -- Shared shift-operator identity and immutable handover audit.
 CREATE TABLE IF NOT EXISTS asset_reliability.app_users (
     email TEXT PRIMARY KEY,
