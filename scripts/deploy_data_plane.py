@@ -245,10 +245,27 @@ def selective_deploy(args: argparse.Namespace, *resources: str) -> None:
     )
 
 
-def restart_continuous_job(args: argparse.Namespace, resource_key: str) -> None:
-    """Restart a continuous job so its next run uses the deployed source and identity."""
+def set_continuous_pause_status(
+    args: argparse.Namespace, resource_key: str, pause_status: str
+) -> None:
+    """Pause or resume one continuous job with an explicit profile."""
 
-    run(bundle_command("run", args, resource_key, "--restart", "--no-wait"))
+    if pause_status not in {"PAUSED", "UNPAUSED"}:
+        raise ValueError(f"Unsupported continuous pause status: {pause_status}")
+    job_id = resource_id(args, "jobs", resource_key)
+    run(
+        workspace_command(
+            args,
+            "jobs",
+            "update",
+            job_id,
+            "--json",
+            json.dumps(
+                {"new_settings": {"continuous": {"pause_status": pause_status}}},
+                sort_keys=True,
+            ),
+        )
+    )
 
 
 def active_job_runs(args: argparse.Namespace, resource_key: str) -> list[dict[str, Any]]:
@@ -280,8 +297,8 @@ def active_job_runs(args: argparse.Namespace, resource_key: str) -> list[dict[st
     return [run_payload for run_payload in runs if isinstance(run_payload, dict)]
 
 
-def stop_obsolete_continuous_job(args: argparse.Namespace, resource_key: str) -> None:
-    """Cancel every active or queued run after the bundle has paused an obsolete job."""
+def stop_continuous_job(args: argparse.Namespace, resource_key: str) -> None:
+    """Explicitly cancel every parent run and wait until the job has no active runs."""
 
     job_id = resource_id(args, "jobs", resource_key)
     run(
@@ -321,13 +338,30 @@ def stop_obsolete_continuous_job(args: argparse.Namespace, resource_key: str) ->
     )
 
 
-def wait_for_current_rate_run(
+def get_job_run(
+    args: argparse.Namespace, run_id: str
+) -> dict[str, Any]:
+    """Fetch a parent run with the explicitly selected Databricks profile."""
+
+    return run_json(
+        workspace_command(
+            args,
+            "jobs",
+            "get-run",
+            run_id,
+            "--output",
+            "json",
+        )
+    )
+
+
+def wait_for_current_rate_task(
     args: argparse.Namespace,
     *,
     restart_requested_at_ms: int,
-    previous_run_ids: set[str],
-) -> dict[str, Any]:
-    """Require a newly started shared Rate RTM parent run to reach RUNNING.
+    task_key: str = "ingest_pump_telemetry",
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Require the Rate notebook task itself to reach RUNNING in a new parent run.
 
     A RUNNING job by itself does not prove fresh Lakebase telemetry. The authenticated App health
     and sandbox acceptance checks perform that verification after the App has been deployed.
@@ -336,27 +370,36 @@ def wait_for_current_rate_run(
     deadline = time.monotonic() + args.timeout_seconds
     last_states: list[str] = []
     while time.monotonic() < deadline:
-        runs = active_job_runs(args, RATE_JOB_KEY)
-        last_states = [
-            str((run_payload.get("state") or {}).get("life_cycle_state", "UNKNOWN"))
-            for run_payload in runs
-        ]
-        for run_payload in runs:
-            state = str((run_payload.get("state") or {}).get("life_cycle_state", "UNKNOWN"))
-            start_time = int(run_payload.get("start_time") or 0)
-            run_id = str(run_payload.get("run_id") or "")
-            # Continuous-job replacement can overlap the old canceling parent. Requiring a start
-            # time near this restart request and a new run ID prevents an older RUNNING parent from
-            # satisfying the gate while allowing for small client/workspace clock skew.
-            if (
-                state == "RUNNING"
-                and run_id not in previous_run_ids
-                and start_time >= restart_requested_at_ms - 60_000
-            ):
-                return run_payload
+        parents = active_job_runs(args, RATE_JOB_KEY)
+        last_states = []
+        for parent_summary in parents:
+            start_time = int(parent_summary.get("start_time") or 0)
+            run_id = str(parent_summary.get("run_id") or "")
+            if not run_id or start_time < restart_requested_at_ms - 60_000:
+                continue
+
+            parent = get_job_run(args, run_id)
+            matching_tasks = [
+                task
+                for task in parent.get("tasks", [])
+                if isinstance(task, dict) and task.get("task_key") == task_key
+            ]
+            if len(matching_tasks) != 1:
+                last_states.append(f"parent={run_id} task={task_key} missing")
+                continue
+            task = matching_tasks[0]
+            task_state = task.get("state") or {}
+            life_cycle_state = str(task_state.get("life_cycle_state", "UNKNOWN"))
+            state_message = str(task_state.get("state_message", ""))
+            last_states.append(
+                f"parent={run_id} task={task_key} state={life_cycle_state} "
+                f"message={state_message}"
+            )
+            if life_cycle_state == "RUNNING":
+                return parent, task
         time.sleep(args.poll_seconds)
     raise TimeoutError(
-        f"Timed out after {args.timeout_seconds}s waiting for {RATE_JOB_KEY}; "
+        f"Timed out after {args.timeout_seconds}s waiting for {RATE_JOB_KEY}.{task_key}; "
         f"last active states were {last_states or ['none']}"
     )
 
@@ -385,18 +428,18 @@ def deploy(args: argparse.Namespace) -> None:
     run(bundle_command("deploy", args, "--auto-approve"))
     grant_bundle_source_read(args)
     for resource_key in OBSOLETE_CONTINUOUS_JOB_KEYS:
-        stop_obsolete_continuous_job(args, resource_key)
-    previous_rate_run_ids = {
-        str(run_payload.get("run_id"))
-        for run_payload in active_job_runs(args, RATE_JOB_KEY)
-        if run_payload.get("run_id") is not None
-    }
+        stop_continuous_job(args, resource_key)
+
+    # Pause the continuous trigger before cancellation so Databricks cannot replace an old parent
+    # while it is being drained. Only after active_job_runs is empty do we resume the trigger and
+    # request a fresh parent/task pair.
+    set_continuous_pause_status(args, RATE_JOB_KEY, "PAUSED")
+    stop_continuous_job(args, RATE_JOB_KEY)
     restart_requested_at_ms = int(time.time() * 1000)
-    restart_continuous_job(args, RATE_JOB_KEY)
-    active_rate_run = wait_for_current_rate_run(
+    set_continuous_pause_status(args, RATE_JOB_KEY, "UNPAUSED")
+    active_rate_run, active_rate_task = wait_for_current_rate_task(
         args,
         restart_requested_at_ms=restart_requested_at_ms,
-        previous_run_ids=previous_rate_run_ids,
     )
     print(
         json.dumps(
@@ -404,7 +447,9 @@ def deploy(args: argparse.Namespace) -> None:
                 "rate_rtm_job": RATE_JOB_KEY,
                 "run_id": active_rate_run.get("run_id"),
                 "start_time": active_rate_run.get("start_time"),
-                "life_cycle_state": "RUNNING",
+                "task_key": active_rate_task.get("task_key"),
+                "task_run_id": active_rate_task.get("run_id"),
+                "task_life_cycle_state": "RUNNING",
                 "telemetry_freshness_verified": False,
                 "next_gate": "authenticated App health and sandbox telemetry acceptance",
             },
