@@ -8,8 +8,10 @@ retention. Database rows—not notifications or in-process counters—remain aut
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import re
+import secrets
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -36,9 +38,9 @@ from backend.models import (
     PlatformStatus,
     PumpState,
     RuntimeActivity,
+    SandboxState,
     ScenarioCommand,
     ScenarioState,
-    ShiftOperatorState,
 )
 
 RTM_FRESHNESS_SECONDS = 15
@@ -84,6 +86,7 @@ class LakebaseCommandCenterRepository:
         telemetry_retention_seconds: int = 86_400,
         telemetry_retention_interval_seconds: float = 300.0,
         telemetry_retention_batch_size: int = 1_000,
+        sandbox_ttl_seconds: int = 7_200,
     ) -> None:
         if not re.fullmatch(r"[a-z_][a-z0-9_]*", schema):
             raise ValueError("Lakebase schema must be a simple PostgreSQL identifier")
@@ -94,6 +97,7 @@ class LakebaseCommandCenterRepository:
         self._telemetry_retention_seconds = max(1, telemetry_retention_seconds)
         self._telemetry_retention_interval_seconds = max(0.1, telemetry_retention_interval_seconds)
         self._telemetry_retention_batch_size = max(1, telemetry_retention_batch_size)
+        self._sandbox_ttl_seconds = max(300, sandbox_ttl_seconds)
         self._pool = AsyncConnectionPool(
             conninfo=dsn,
             connection_class=OAuthAsyncConnection,
@@ -103,12 +107,12 @@ class LakebaseCommandCenterRepository:
             open=False,
             kwargs={"row_factory": dict_row},
         )
-        self._revision = 0
-        self._fingerprint = ""
+        self._revisions: dict[str, int] = {}
+        self._fingerprints: dict[str, str] = {}
         self._revision_lock = asyncio.Lock()
         self._change_condition = asyncio.Condition()
         self._change_counter = 0
-        self._handled_change_counter = 0
+        self._handled_change_counters: dict[str, int] = {}
         self._listener_task: asyncio.Task[None] | None = None
         self._retention_task: asyncio.Task[None] | None = None
 
@@ -120,7 +124,6 @@ class LakebaseCommandCenterRepository:
 
         await self._pool.open(wait=True, timeout=30)
         await self._migrate()
-        await self._ensure_active_scenario()
         self._listener_task = asyncio.create_task(self._listen_loop())
         self._retention_task = asyncio.create_task(self._retention_loop())
 
@@ -147,9 +150,25 @@ class LakebaseCommandCenterRepository:
                         """CREATE TABLE IF NOT EXISTS {} (
                         run_id UUID PRIMARY KEY,
                         scenario_id UUID NOT NULL,
+                        sandbox_id UUID NOT NULL DEFAULT
+                          '00000000-0000-0000-0000-000000000001',
                         identity_subject TEXT,
                         captured_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"""
                     ).format(self.table("run_identities"))
+                )
+                await connection.execute(
+                    sql.SQL(
+                        "ALTER TABLE {} ADD COLUMN IF NOT EXISTS sandbox_id UUID NOT NULL "
+                        "DEFAULT '00000000-0000-0000-0000-000000000001'"
+                    ).format(self.table("run_identities"))
+                )
+                await connection.execute(
+                    sql.SQL(
+                        """UPDATE {} identity SET sandbox_id = run.sandbox_id
+                        FROM {} run WHERE identity.run_id = run.run_id
+                          AND identity.sandbox_id =
+                            '00000000-0000-0000-0000-000000000001'"""
+                    ).format(self.table("run_identities"), self.table("agent_runs"))
                 )
                 await connection.execute(
                     sql.SQL(
@@ -202,26 +221,206 @@ class LakebaseCommandCenterRepository:
                         ).format(schema, principal)
                     )
 
-    async def _ensure_active_scenario(self) -> None:
+    async def resolve_sandbox(self, user: AppUser) -> SandboxState:
+        """Resolve one leased generator slot from trusted forwarded user identity.
+
+        Allocation is serialized with ``FOR UPDATE SKIP LOCKED``. Expiring a lease archives its
+        active scenario but never deletes incidents, receipts, work orders, or telemetry.
+        """
+
+        sandbox_id = uuid4()
+        scenario_id = uuid4()
         async with self._pool.connection() as connection:
             async with connection.transaction():
+                await connection.execute(
+                    sql.SQL(
+                        """INSERT INTO {} (email, display_name, last_seen_at)
+                        VALUES (%s, %s, NOW()) ON CONFLICT (email) DO UPDATE
+                        SET display_name = EXCLUDED.display_name, last_seen_at = NOW()"""
+                    ).format(self.table("app_users")),
+                    (user.email, user.name),
+                )
+                await connection.execute(
+                    "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                    (user.email,),
+                )
+                existing = await (
+                    await connection.execute(
+                        sql.SQL(
+                            "SELECT * FROM {} WHERE owner_email = %s FOR UPDATE"
+                        ).format(self.table("sandboxes")),
+                        (user.email,),
+                    )
+                ).fetchone()
+                if (
+                    existing
+                    and existing["status"] == "active"
+                    and existing["expires_at"] > datetime.now(UTC)
+                ):
+                    sandbox_id = existing["sandbox_id"]
+                    slot = existing["generator_slot"]
+                    await connection.execute(
+                        sql.SQL(
+                            """UPDATE {} SET last_seen_at = NOW(),
+                            expires_at = NOW() + make_interval(secs => %s)
+                            WHERE sandbox_id = %s
+                              AND last_seen_at < NOW() - INTERVAL '1 minute'"""
+                        ).format(self.table("sandboxes")),
+                        (self._sandbox_ttl_seconds, sandbox_id),
+                    )
+                    await connection.execute(
+                        sql.SQL(
+                            """UPDATE {} SET lease_expires_at = NOW() + make_interval(secs => %s),
+                            version = version + 1 WHERE generator_slot = %s AND sandbox_id = %s
+                              AND lease_expires_at <
+                                NOW() + make_interval(secs => %s) - INTERVAL '1 minute'"""
+                        ).format(self.table("sandbox_slots")),
+                        (
+                            self._sandbox_ttl_seconds, slot, sandbox_id,
+                            self._sandbox_ttl_seconds,
+                        ),
+                    )
+                else:
+                    if existing:
+                        await connection.execute(
+                            sql.SQL(
+                                "UPDATE {} SET status = 'expired', expires_at = NOW(), "
+                                "version = version + 1 WHERE sandbox_id = %s"
+                            ).format(self.table("sandboxes")),
+                            (existing["sandbox_id"],),
+                        )
+                        await connection.execute(
+                            sql.SQL(
+                                "UPDATE {} SET status = 'archived', ended_at = NOW() "
+                                "WHERE sandbox_id = %s AND status = 'active'"
+                            ).format(self.table("scenario_runs")),
+                            (existing["sandbox_id"],),
+                        )
+                    slot_row = await (
+                        await connection.execute(
+                            sql.SQL(
+                                """SELECT generator_slot, sandbox_id FROM {}
+                                WHERE sandbox_id IS NULL OR lease_expires_at <= NOW()
+                                ORDER BY generator_slot FOR UPDATE SKIP LOCKED LIMIT 1"""
+                            ).format(self.table("sandbox_slots"))
+                        )
+                    ).fetchone()
+                    if not slot_row:
+                        raise RuntimeError("Personal sandbox capacity is exhausted")
+                    slot = slot_row["generator_slot"]
+                    previous = slot_row["sandbox_id"]
+                    if previous:
+                        await connection.execute(
+                            sql.SQL(
+                                "UPDATE {} SET status = 'expired', expires_at = NOW(), "
+                                "version = version + 1 WHERE sandbox_id = %s"
+                            ).format(self.table("sandboxes")),
+                            (previous,),
+                        )
+                        await connection.execute(
+                            sql.SQL(
+                                "UPDATE {} SET status = 'archived', ended_at = NOW() "
+                                "WHERE sandbox_id = %s AND status = 'active'"
+                            ).format(self.table("scenario_runs")),
+                            (previous,),
+                        )
+                    if existing:
+                        sandbox_id = existing["sandbox_id"]
+                        await connection.execute(
+                            sql.SQL(
+                                """UPDATE {} SET sandbox_id = NULL, leased_at = NULL,
+                                lease_expires_at = NULL, version = version + 1
+                                WHERE sandbox_id = %s AND generator_slot <> %s"""
+                            ).format(self.table("sandbox_slots")),
+                            (sandbox_id, slot),
+                        )
+                        await connection.execute(
+                            sql.SQL(
+                                """UPDATE {} SET generator_slot = %s, status = 'active',
+                                last_seen_at = NOW(),
+                                expires_at = NOW() + make_interval(secs => %s),
+                                version = version + 1 WHERE sandbox_id = %s"""
+                            ).format(self.table("sandboxes")),
+                            (slot, self._sandbox_ttl_seconds, sandbox_id),
+                        )
+                    else:
+                        await connection.execute(
+                            sql.SQL(
+                                """INSERT INTO {} (sandbox_id, owner_email, generator_slot, status,
+                                expires_at) VALUES (%s, %s, %s, 'active',
+                                NOW() + make_interval(secs => %s))"""
+                            ).format(self.table("sandboxes")),
+                            (sandbox_id, user.email, slot, self._sandbox_ttl_seconds),
+                        )
+                    await connection.execute(
+                        sql.SQL(
+                            """UPDATE {} SET sandbox_id = %s, leased_at = NOW(),
+                            lease_expires_at = NOW() + make_interval(secs => %s),
+                            version = version + 1 WHERE generator_slot = %s"""
+                        ).format(self.table("sandbox_slots")),
+                        (sandbox_id, self._sandbox_ttl_seconds, slot),
+                    )
                 active = await (
                     await connection.execute(
-                        sql.SQL("SELECT scenario_id FROM {} WHERE status = 'active'").format(
-                            self.table("scenario_runs")
-                        )
+                        sql.SQL(
+                            "SELECT scenario_id FROM {} WHERE sandbox_id = %s "
+                            "AND status = 'active' FOR UPDATE"
+                        ).format(self.table("scenario_runs")),
+                        (sandbox_id,),
                     )
                 ).fetchone()
                 if active:
-                    return
-                scenario_id = uuid4()
+                    scenario_id = active["scenario_id"]
+                else:
+                    await connection.execute(
+                        sql.SQL(
+                            "INSERT INTO {} (scenario_id, sandbox_id, status, requested_by) "
+                            "VALUES (%s, %s, 'active', %s)"
+                        ).format(self.table("scenario_runs")),
+                        (scenario_id, sandbox_id, user.email),
+                    )
+                row = await (
+                    await connection.execute(
+                        sql.SQL(
+                            "SELECT owner_email, generator_slot, expires_at, version FROM {} "
+                            "WHERE sandbox_id = %s"
+                        ).format(self.table("sandboxes")),
+                        (sandbox_id,),
+                    )
+                ).fetchone()
+        return SandboxState(
+            id=str(sandbox_id),
+            scenario_id=str(scenario_id),
+            generator_slot=row["generator_slot"],
+            owner_email=row["owner_email"],
+            expires_at=row["expires_at"],
+            version=row["version"],
+        )
+
+    async def active_sandboxes(self) -> list[SandboxState]:
+        """Return bounded evaluator work without exposing one tenant to another."""
+
+        async with self._pool.connection() as connection:
+            rows = await (
                 await connection.execute(
                     sql.SQL(
-                        "INSERT INTO {} (scenario_id, status, requested_by) "
-                        "VALUES (%s, 'active', 'app-startup')"
-                    ).format(self.table("scenario_runs")),
-                    (scenario_id,),
+                        """SELECT sandbox.sandbox_id, sandbox.owner_email,
+                        sandbox.generator_slot, sandbox.expires_at, sandbox.version,
+                        scenario.scenario_id FROM {} sandbox JOIN {} scenario
+                          ON scenario.sandbox_id = sandbox.sandbox_id AND scenario.status = 'active'
+                        WHERE sandbox.status = 'active' AND sandbox.expires_at > NOW()
+                        ORDER BY sandbox.generator_slot"""
+                    ).format(self.table("sandboxes"), self.table("scenario_runs"))
                 )
+            ).fetchall()
+        return [
+            SandboxState(
+                id=str(row["sandbox_id"]), scenario_id=str(row["scenario_id"]),
+                generator_slot=row["generator_slot"], owner_email=row["owner_email"],
+                expires_at=row["expires_at"], version=row["version"]
+            )
+            for row in rows
+        ]
 
     async def _listen_loop(self) -> None:
         """Convert lossy PostgreSQL notifications into local snapshot invalidations.
@@ -348,19 +547,34 @@ class LakebaseCommandCenterRepository:
             self.table("work_orders"),
         )
 
-    async def snapshot(self) -> DashboardSnapshot:
+    async def snapshot(self, sandbox_id: str | None = None) -> DashboardSnapshot:
         """Build one bounded dashboard read model and advance its process-local revision."""
 
         query_started = time.perf_counter()
         async with self._change_condition:
             snapshot_change_counter = self._change_counter
         async with self._pool.connection() as connection:
+            if sandbox_id is None:
+                raise ValueError("sandbox_id is required for dashboard reads")
+            sandbox = await (
+                await connection.execute(
+                    sql.SQL(
+                        "SELECT owner_email, generator_slot, expires_at, version FROM {} "
+                        "WHERE sandbox_id = %s AND status = 'active' AND expires_at > NOW()"
+                    ).format(self.table("sandboxes")),
+                    (sandbox_id,),
+                )
+            ).fetchone()
+            if not sandbox:
+                raise LookupError("Personal sandbox is unavailable or expired")
             scenario = await (
                 await connection.execute(
                     sql.SQL(
                         "SELECT scenario_id::text, started_at, p204_excursion_started_at "
-                        "FROM {} WHERE status = 'active' ORDER BY started_at DESC LIMIT 1"
-                    ).format(self.table("scenario_runs"))
+                        "FROM {} WHERE sandbox_id = %s AND status = 'active' "
+                        "ORDER BY started_at DESC LIMIT 1"
+                    ).format(self.table("scenario_runs")),
+                    (sandbox_id,),
                 )
             ).fetchone()
             if not scenario:
@@ -399,30 +613,14 @@ class LakebaseCommandCenterRepository:
                     (scenario["scenario_id"],),
                 )
             ).fetchone()
-            operator_row = await (
-                await connection.execute(
-                    sql.SQL(
-                        """SELECT state.operator_email, state.version, state.updated_at,
-                        state.updated_by, selected.display_name AS operator_name
-                        FROM {} state LEFT JOIN {} selected
-                          ON selected.email = state.operator_email WHERE state.singleton"""
-                    ).format(self.table("shift_operator"), self.table("app_users"))
-                )
-            ).fetchone()
-            recent_user_rows = await (
-                await connection.execute(
-                    sql.SQL(
-                        "SELECT email, display_name, last_seen_at FROM {} "
-                        "ORDER BY last_seen_at DESC LIMIT 20"
-                    ).format(self.table("app_users"))
-                )
-            ).fetchall()
             heartbeat_rows = await (
                 await connection.execute(
                     sql.SQL(
                         "SELECT component_name, observed_at, status FROM {} "
-                        "WHERE component_name IN ('telemetry-producer', 'alert-evaluator')"
+                        "WHERE component_name IN ('rate-rtm', 'alert-evaluator') "
+                        "AND (sandbox_id IS NULL OR sandbox_id = %s)"
                     ).format(self.table("component_heartbeats"))
+                    , (sandbox_id,)
                 )
             ).fetchall()
         query_latency_ms = max(1, round((time.perf_counter() - query_started) * 1000))
@@ -430,7 +628,7 @@ class LakebaseCommandCenterRepository:
         pump_models: list[PumpState] = []
         active_runs: list[ActiveRun] = []
         latest_ingested: datetime | None = None
-        kafka_to_lakebase_latency_ms = 0
+        source_to_lakebase_latency_ms = 0
         baselines = {
             "P-201": (182.0, 42.0, 1.35),
             "P-202": (179.0, 41.5, 1.45),
@@ -456,7 +654,7 @@ class LakebaseCommandCenterRepository:
             if ingested and (latest_ingested is None or ingested > latest_ingested):
                 latest_ingested = ingested
                 if row["event_time"]:
-                    kafka_to_lakebase_latency_ms = max(
+                    source_to_lakebase_latency_ms = max(
                         0, round((ingested - row["event_time"]).total_seconds() * 1000)
                     )
             pump_models.append(
@@ -496,16 +694,16 @@ class LakebaseCommandCenterRepository:
         now = datetime.now(UTC)
         heartbeat_by_name = {row["component_name"]: row for row in heartbeat_rows}
         stale_components: list[str] = []
-        producer = heartbeat_by_name.get("telemetry-producer")
+        producer = heartbeat_by_name.get("rate-rtm")
         evaluator = heartbeat_by_name.get("alert-evaluator")
         if (
             not producer
             or producer["status"] != "healthy"
             or (now - producer["observed_at"]).total_seconds() > 15
         ):
-            stale_components.append("producer")
-        # RTM health is derived from its durable effect rather than a process-local status:
-        # fresh ingested telemetry proves that Kafka records are reaching Lakebase.
+            stale_components.append("rate generator")
+        # RTM health requires both a fresh statement-level sink heartbeat and its durable effect.
+        # Fresh ingested telemetry proves Spark Rate rows are reaching this sandbox in Lakebase.
         if (
             not latest_ingested
             or (now - latest_ingested).total_seconds() > RTM_FRESHNESS_SECONDS
@@ -519,9 +717,9 @@ class LakebaseCommandCenterRepository:
             stale_components.append("evaluator")
         platform_connection = "degraded" if stale_components else "connected"
         source_label = (
-            "Lakebase · live operational state"
+            "Spark Rate → Lakebase"
             if not stale_components
-            else f"Lakebase · degraded: {', '.join(stale_components)}"
+            else f"Spark Rate → Lakebase · degraded: {', '.join(stale_components)}"
         )
 
         snapshot = DashboardSnapshot(
@@ -530,62 +728,50 @@ class LakebaseCommandCenterRepository:
                 p204_triggered=bool(scenario["p204_excursion_started_at"] or pending_command),
                 started_at=scenario["started_at"],
             ),
+            sandbox=SandboxState(
+                id=sandbox_id,
+                scenario_id=scenario["scenario_id"],
+                generator_slot=sandbox["generator_slot"],
+                owner_email=sandbox["owner_email"],
+                expires_at=sandbox["expires_at"],
+                version=sandbox["version"],
+            ),
             platform=PlatformStatus(
                 connection=platform_connection,
                 source_label=source_label,
                 latency_ms=query_latency_ms,
-                kafka_to_lakebase_latency_ms=kafka_to_lakebase_latency_ms,
+                source_to_lakebase_latency_ms=source_to_lakebase_latency_ms,
                 lakebase_to_ui_latency_ms=query_latency_ms,
-                end_to_end_latency_ms=kafka_to_lakebase_latency_ms + query_latency_ms,
+                end_to_end_latency_ms=source_to_lakebase_latency_ms + query_latency_ms,
                 last_event_at=latest_ingested or scenario["started_at"],
             ),
             pumps=pump_models,
             alerts=alerts,
             invocations=invocations,
             active_runs=active_runs,
-            shift_operator=ShiftOperatorState(
-                operator=(
-                    AppUser(
-                        email=operator_row["operator_email"],
-                        name=operator_row["operator_name"],
-                        last_seen_at=operator_row["updated_at"] or scenario["started_at"],
-                    )
-                    if operator_row and operator_row["operator_email"]
-                    else None
-                ),
-                recent_users=[
-                    AppUser(
-                        email=row["email"],
-                        name=row["display_name"],
-                        last_seen_at=row["last_seen_at"],
-                    )
-                    for row in recent_user_rows
-                ],
-                version=int(operator_row["version"] if operator_row else 0),
-                updated_at=operator_row["updated_at"] if operator_row else None,
-                updated_by=operator_row["updated_by"] if operator_row else None,
-            ),
         )
-        snapshot = await self._with_revision(snapshot)
+        snapshot = await self._with_revision(snapshot, sandbox_id)
         async with self._change_condition:
-            self._handled_change_counter = max(
-                self._handled_change_counter, snapshot_change_counter
+            self._handled_change_counters[sandbox_id] = max(
+                self._handled_change_counters.get(sandbox_id, 0), snapshot_change_counter
             )
         return snapshot
 
-    async def _with_revision(self, snapshot: DashboardSnapshot) -> DashboardSnapshot:
+    async def _with_revision(
+        self, snapshot: DashboardSnapshot, sandbox_id: str
+    ) -> DashboardSnapshot:
         stable = snapshot.model_copy(deep=True)
         stable.revision = 0
         stable.platform.latency_ms = 0
-        stable.platform.kafka_to_lakebase_latency_ms = 0
+        stable.platform.source_to_lakebase_latency_ms = 0
         stable.platform.lakebase_to_ui_latency_ms = 0
         stable.platform.end_to_end_latency_ms = 0
         fingerprint = stable.model_dump_json()
         async with self._revision_lock:
-            if fingerprint != self._fingerprint:
-                self._fingerprint = fingerprint
-                self._revision += 1
-            snapshot.revision = self._revision
+            if fingerprint != self._fingerprints.get(sandbox_id):
+                self._fingerprints[sandbox_id] = fingerprint
+                self._revisions[sandbox_id] = self._revisions.get(sandbox_id, 0) + 1
+            snapshot.revision = self._revisions.get(sandbox_id, 0)
         return snapshot
 
     @staticmethod
@@ -635,7 +821,11 @@ class LakebaseCommandCenterRepository:
             outcome=row["resolution_summary"],
         )
 
-    async def incident(self, incident_id: str) -> IncidentDetail | None:
+    async def incident(
+        self, incident_id: str, sandbox_id: str | None = None
+    ) -> IncidentDetail | None:
+        if sandbox_id is None:
+            raise ValueError("sandbox_id is required for incident reads")
         async with self._pool.connection() as connection:
             row = await (
                 await connection.execute(
@@ -646,9 +836,10 @@ class LakebaseCommandCenterRepository:
                         run.estimated_cost_usd, run.tool_call_count,
                         run.started_at, run.completed_at
                         FROM {} incident LEFT JOIN {} run ON run.incident_id = incident.incident_id
-                        WHERE incident.incident_id = %s::uuid"""
+                        WHERE incident.incident_id = %s::uuid
+                          AND incident.sandbox_id = %s::uuid"""
                     ).format(self.table("incidents"), self.table("agent_runs")),
-                    (incident_id,),
+                    (incident_id, sandbox_id),
                 )
             ).fetchone()
             if not row:
@@ -720,6 +911,7 @@ class LakebaseCommandCenterRepository:
             )
         return IncidentDetail(
             id=str(row["incident_id"]),
+            sandbox_id=str(row["sandbox_id"]),
             scenario_id=str(row["scenario_id"]),
             asset_id=row["pump_id"],
             title="Drive-end bearing vibration excursion",
@@ -744,17 +936,19 @@ class LakebaseCommandCenterRepository:
             updated_at=row["resolved_at"] or row["triggered_at"],
         )
 
-    async def wait_for_change(self, after_revision: int, timeout: float) -> DashboardSnapshot:
+    async def wait_for_change(
+        self, after_revision: int, timeout: float, sandbox_id: str | None = None
+    ) -> DashboardSnapshot:
         """Coalesce notification bursts before rebuilding the canonical snapshot."""
 
-        if self._revision > after_revision:
-            return await self.snapshot()
+        if self._revisions.get(sandbox_id or "", 0) > after_revision:
+            return await self.snapshot(sandbox_id)
 
         notified = False
         async with self._change_condition:
-            if self._revision > after_revision:
+            if self._revisions.get(sandbox_id or "", 0) > after_revision:
                 notified = True
-            elif self._change_counter > self._handled_change_counter:
+            elif self._change_counter > self._handled_change_counters.get(sandbox_id or "", 0):
                 notified = True
             else:
                 change_cursor = self._change_counter
@@ -769,9 +963,9 @@ class LakebaseCommandCenterRepository:
                 except TimeoutError:
                     pass
 
-        if notified and self._revision <= after_revision:
+        if notified and self._revisions.get(sandbox_id or "", 0) <= after_revision:
             await self._coalesce_notifications()
-        return await self.snapshot()
+        return await self.snapshot(sandbox_id)
 
     async def _coalesce_notifications(self) -> None:
         if self._sse_coalesce_seconds <= 0:
@@ -789,7 +983,7 @@ class LakebaseCommandCenterRepository:
                 except TimeoutError:
                     return
 
-    async def restart_scenario(self, requested_by: str | None) -> str:
+    async def restart_scenario(self, sandbox_id: str, requested_by: str | None) -> str:
         """Atomically close active reviews before publishing a replacement scenario."""
 
         scenario_id, command_id = uuid4(), uuid4()
@@ -803,187 +997,96 @@ class LakebaseCommandCenterRepository:
                         approval_claimed_by = NULL,
                         error = 'Archived by scenario restart'
                         FROM {} incident WHERE run.incident_id = incident.incident_id
-                          AND incident.scenario_id IN
-                            (SELECT scenario_id FROM {} WHERE status = 'active')
+                          AND incident.sandbox_id = %s::uuid
                           AND run.status IN ('queued', 'running', 'waiting_approval')"""
                     ).format(
                         self.table("agent_runs"),
                         self.table("incidents"),
-                        self.table("scenario_runs"),
-                    )
+                    ),
+                    (sandbox_id,),
                 )
                 await connection.execute(
                     sql.SQL(
                         """UPDATE {} SET status = 'failed', resolved_at = NOW(),
                         resolution_summary = 'Archived by scenario restart'
-                        WHERE scenario_id IN (SELECT scenario_id FROM {} WHERE status = 'active')
+                        WHERE sandbox_id = %s::uuid
                           AND status IN ('reviewing', 'waiting_approval')"""
-                    ).format(self.table("incidents"), self.table("scenario_runs"))
+                    ).format(self.table("incidents")),
+                    (sandbox_id,),
                 )
                 await connection.execute(
                     sql.SQL(
                         "UPDATE {} SET status = 'archived', ended_at = NOW() "
-                        "WHERE status = 'active'"
-                    ).format(self.table("scenario_runs"))
-                )
-                await connection.execute(
-                    sql.SQL(
-                        "INSERT INTO {} (scenario_id, status, requested_by) "
-                        "VALUES (%s, 'active', %s)"
+                        "WHERE sandbox_id = %s::uuid AND status = 'active'"
                     ).format(self.table("scenario_runs")),
-                    (scenario_id, requested_by),
+                    (sandbox_id,),
                 )
                 await connection.execute(
                     sql.SQL(
-                        "INSERT INTO {} (command_id, scenario_id, command_type, requested_by) "
-                        "VALUES (%s, %s, 'restart_scenario', %s)"
+                        "INSERT INTO {} (scenario_id, sandbox_id, status, requested_by) "
+                        "VALUES (%s, %s, 'active', %s)"
+                    ).format(self.table("scenario_runs")),
+                    (scenario_id, sandbox_id, requested_by),
+                )
+                await connection.execute(
+                    sql.SQL(
+                        "INSERT INTO {} (command_id, scenario_id, sandbox_id, "
+                        "command_type, requested_by) "
+                        "VALUES (%s, %s, %s, 'restart_scenario', %s)"
                     ).format(self.table("scenario_commands")),
-                    (command_id, scenario_id, requested_by),
+                    (command_id, scenario_id, sandbox_id, requested_by),
+                )
+                await connection.execute(
+                    sql.SQL(
+                        """INSERT INTO {} (sandbox_id, pump_id, control_type, status, initiated_by)
+                        VALUES (%s, 'P-204', 'excursion', 'cleared', %s)
+                        ON CONFLICT (sandbox_id, pump_id, control_type) DO UPDATE
+                        SET status = 'cleared', updated_at = NOW(), version = {}.version + 1"""
+                    ).format(self.table("sandbox_controls"), self.table("sandbox_controls")),
+                    (sandbox_id, requested_by or "authenticated-user"),
                 )
         return str(scenario_id)
 
-    async def register_user(self, user: AppUser) -> ShiftOperatorState:
-        async with self._pool.connection() as connection:
-            async with connection.transaction():
-                await connection.execute(
-                    sql.SQL(
-                        """INSERT INTO {} (email, display_name, last_seen_at)
-                        VALUES (%s, %s, NOW()) ON CONFLICT (email) DO UPDATE
-                        SET display_name = EXCLUDED.display_name, last_seen_at = NOW()"""
-                    ).format(self.table("app_users")),
-                    (user.email, user.name),
-                )
-                await connection.execute(
-                    sql.SQL(
-                        """UPDATE {} SET operator_email = %s, version = version + 1,
-                        updated_at = NOW(), updated_by = %s
-                        WHERE singleton AND operator_email IS NULL"""
-                    ).format(self.table("shift_operator")),
-                    (user.email, user.email),
-                )
-        return (await self.snapshot()).shift_operator
+    async def register_user(self, user: AppUser) -> SandboxState:
+        """Compatibility name for callers; registration now resolves personal tenancy."""
 
-    async def handover_operator(
-        self,
-        expected_version: int,
-        new_operator_email: str,
-        initiated_by: str,
-        fresh_snapshot: DashboardSnapshot | None = None,
-    ) -> str:
-        del fresh_snapshot
-        scenario_id, command_id, audit_id = uuid4(), uuid4(), uuid4()
-        async with self._pool.connection() as connection:
-            async with connection.transaction():
-                state = await (
-                    await connection.execute(
-                        sql.SQL(
-                            "SELECT operator_email, version FROM {} WHERE singleton FOR UPDATE"
-                        ).format(self.table("shift_operator"))
-                    )
-                ).fetchone()
-                if not state or int(state["version"]) != expected_version:
-                    raise ValueError("Operator changed; refresh and confirm the handover again")
-                if state["operator_email"] == new_operator_email:
-                    raise ValueError("The selected user is already the shift operator")
-                selected = await (
-                    await connection.execute(
-                        sql.SQL("SELECT 1 FROM {} WHERE email = %s").format(
-                            self.table("app_users")
-                        ),
-                        (new_operator_email,),
-                    )
-                ).fetchone()
-                if not selected:
-                    raise ValueError("The selected operator is not a recent App user")
-                await connection.execute(
-                    sql.SQL(
-                        """UPDATE {} run SET status = 'failed', completed_at = NOW(),
-                        pending_approval_url = NULL, pending_tool_request = NULL,
-                        error = 'Archived by shift-operator handover'
-                        FROM {} incident WHERE run.incident_id = incident.incident_id
-                          AND incident.scenario_id IN
-                            (SELECT scenario_id FROM {} WHERE status = 'active')
-                          AND run.status IN ('queued', 'running', 'waiting_approval')"""
-                    ).format(
-                        self.table("agent_runs"),
-                        self.table("incidents"),
-                        self.table("scenario_runs"),
-                    )
-                )
-                await connection.execute(
-                    sql.SQL(
-                        """UPDATE {} SET status = 'failed', resolved_at = NOW(),
-                        resolution_summary = 'Archived by shift-operator handover'
-                        WHERE scenario_id IN (SELECT scenario_id FROM {} WHERE status = 'active')
-                          AND status IN ('reviewing', 'waiting_approval')"""
-                    ).format(self.table("incidents"), self.table("scenario_runs"))
-                )
-                await connection.execute(
-                    sql.SQL(
-                        "UPDATE {} SET status = 'archived', ended_at = NOW() "
-                        "WHERE status = 'active'"
-                    ).format(self.table("scenario_runs"))
-                )
-                await connection.execute(
-                    sql.SQL(
-                        "INSERT INTO {} (scenario_id, status, requested_by) "
-                        "VALUES (%s, 'active', %s)"
-                    ).format(self.table("scenario_runs")),
-                    (scenario_id, initiated_by),
-                )
-                await connection.execute(
-                    sql.SQL(
-                        "INSERT INTO {} (command_id, scenario_id, command_type, requested_by) "
-                        "VALUES (%s, %s, 'restart_scenario', %s)"
-                    ).format(self.table("scenario_commands")),
-                    (command_id, scenario_id, initiated_by),
-                )
-                await connection.execute(
-                    sql.SQL(
-                        """UPDATE {} SET operator_email = %s, version = version + 1,
-                        updated_at = NOW(), updated_by = %s WHERE singleton"""
-                    ).format(self.table("shift_operator")),
-                    (new_operator_email, initiated_by),
-                )
-                await connection.execute(
-                    sql.SQL(
-                        """INSERT INTO {} (audit_id, previous_operator_email,
-                        new_operator_email, initiated_by, previous_version, new_version)
-                        VALUES (%s, %s, %s, %s, %s, %s)"""
-                    ).format(self.table("shift_operator_audit")),
-                    (
-                        audit_id,
-                        state["operator_email"],
-                        new_operator_email,
-                        initiated_by,
-                        expected_version,
-                        expected_version + 1,
-                    ),
-                )
-        return str(scenario_id)
+        return await self.resolve_sandbox(user)
 
     async def enqueue_command(self, command: ScenarioCommand) -> None:
         try:
             async with self._pool.connection() as connection:
                 await connection.execute(
                     sql.SQL(
-                        "INSERT INTO {} (command_id, scenario_id, command_type) "
-                        "VALUES (%s::uuid, %s::uuid, %s)"
+                        "INSERT INTO {} (command_id, scenario_id, sandbox_id, command_type) "
+                        "VALUES (%s::uuid, %s::uuid, %s::uuid, %s)"
                     ).format(self.table("scenario_commands")),
-                    (command.id, command.scenario_id, command.kind),
+                    (command.id, command.scenario_id, command.sandbox_id, command.kind),
                 )
+                if command.kind == "start_p204_excursion":
+                    await connection.execute(
+                        sql.SQL(
+                            """INSERT INTO {} (sandbox_id, pump_id, control_type, status,
+                            initiated_by) VALUES (%s::uuid, 'P-204', 'excursion', 'active',
+                            'authenticated-user')
+                            ON CONFLICT (sandbox_id, pump_id, control_type) DO UPDATE
+                            SET status = 'active', started_at = NOW(), updated_at = NOW(),
+                                version = {}.version + 1"""
+                        ).format(self.table("sandbox_controls"), self.table("sandbox_controls")),
+                        (command.sandbox_id,),
+                    )
                 await connection.commit()
         except psycopg.errors.UniqueViolation as exc:
             raise ValueError("P-204 excursion already queued for this scenario") from exc
 
     def _threshold_candidates_query(self) -> sql.Composed:
         return sql.SQL(
-            """SELECT scenario.scenario_id, live.pump_id, live.vibration_mm_s,
+            """SELECT scenario.sandbox_id, scenario.scenario_id, live.pump_id, live.vibration_mm_s,
             live.event_time, rule.rule_id, rule.warning_threshold
             FROM {} scenario JOIN {} live
               ON live.scenario_id = scenario.scenario_id::text
             JOIN {} rule ON rule.rule_id = 'bearing-vibration-warning'
-            WHERE scenario.status = 'active' AND scenario.scenario_id = %s::uuid
+            WHERE scenario.status = 'active' AND scenario.sandbox_id = %s::uuid
+              AND scenario.scenario_id = %s::uuid
               AND rule.enabled AND live.vibration_mm_s >= rule.warning_threshold"""
         ).format(
             self.table("scenario_runs"),
@@ -991,24 +1094,30 @@ class LakebaseCommandCenterRepository:
             self.table("alert_rules"),
         )
 
-    async def evaluate_thresholds(self, scenario_id: str) -> list[tuple[str, str]]:
+    async def evaluate_thresholds(
+        self, sandbox_id: str, scenario_id: str
+    ) -> list[tuple[str, str]]:
         created: list[tuple[str, str]] = []
         async with self._pool.connection() as connection:
             async with connection.transaction():
                 candidates = await (
-                    await connection.execute(self._threshold_candidates_query(), (scenario_id,))
+                    await connection.execute(
+                        self._threshold_candidates_query(), (sandbox_id, scenario_id)
+                    )
                 ).fetchall()
                 for candidate in candidates:
                     incident_id, run_id = uuid4(), uuid4()
                     inserted = await connection.execute(
                         sql.SQL(
-                            """INSERT INTO {} (incident_id, scenario_id, pump_id, rule_id, status,
+                            """INSERT INTO {} (incident_id, sandbox_id, scenario_id,
+                            pump_id, rule_id, status,
                             observed_value, threshold_value, triggered_at)
-                            VALUES (%s, %s, %s, %s, 'reviewing', %s, %s, %s)
+                            VALUES (%s, %s, %s, %s, %s, 'reviewing', %s, %s, %s)
                             ON CONFLICT (scenario_id, pump_id, rule_id) DO NOTHING"""
                         ).format(self.table("incidents")),
                         (
                             incident_id,
+                            candidate["sandbox_id"],
                             candidate["scenario_id"],
                             candidate["pump_id"],
                             candidate["rule_id"],
@@ -1028,13 +1137,96 @@ class LakebaseCommandCenterRepository:
                     await connection.execute(
                         sql.SQL(
                             "INSERT INTO {} "
-                            "(run_id, incident_id, status, trigger_prompt, started_at) "
-                            "VALUES (%s, %s, 'running', %s, NOW())"
+                            "(run_id, incident_id, sandbox_id, status, trigger_prompt, started_at) "
+                            "VALUES (%s, %s, %s, 'running', %s, NOW())"
                         ).format(self.table("agent_runs")),
-                        (run_id, incident_id, prompt),
+                        (run_id, incident_id, sandbox_id, prompt),
                     )
                     created.append((str(incident_id), str(run_id)))
         return created
+
+    async def create_run_context(self, incident_id: str, sandbox_id: str) -> str:
+        """Create an opaque, model-hidden capability for one active agent run."""
+
+        raw_context = secrets.token_urlsafe(32)
+        digest = hashlib.sha256(raw_context.encode()).hexdigest()
+        async with self._pool.connection() as connection:
+            async with connection.transaction():
+                row = await (
+                    await connection.execute(
+                        sql.SQL(
+                            """SELECT run.run_id, incident.scenario_id
+                            FROM {} incident JOIN {} run
+                              ON run.incident_id = incident.incident_id
+                            JOIN {} scenario ON scenario.scenario_id = incident.scenario_id
+                            WHERE incident.incident_id = %s::uuid
+                              AND incident.sandbox_id = %s::uuid
+                              AND scenario.sandbox_id = %s::uuid
+                              AND scenario.status = 'active'
+                              AND run.status IN ('queued', 'running', 'waiting_approval')
+                            FOR UPDATE OF run"""
+                        ).format(
+                            self.table("incidents"),
+                            self.table("agent_runs"),
+                            self.table("scenario_runs"),
+                        ),
+                        (incident_id, sandbox_id, sandbox_id),
+                    )
+                ).fetchone()
+                if not row:
+                    raise LookupError("No active sandbox-scoped agent run")
+                await connection.execute(
+                    sql.SQL(
+                        """INSERT INTO {} (run_context_sha256, run_id, incident_id,
+                        scenario_id, sandbox_id) VALUES (%s, %s, %s, %s, %s)
+                        ON CONFLICT (run_id) DO UPDATE SET
+                          run_context_sha256 = EXCLUDED.run_context_sha256,
+                          status = 'active', terminal_at = NULL"""
+                    ).format(self.table("agent_run_contexts")),
+                    (digest, row["run_id"], incident_id, row["scenario_id"], sandbox_id),
+                )
+        return raw_context
+
+    async def resolve_run_context(self, raw_context: str) -> dict[str, str] | None:
+        """Resolve an internal capability and fail closed for stale or terminal runs."""
+
+        digest = hashlib.sha256(raw_context.encode()).hexdigest()
+        async with self._pool.connection() as connection:
+            row = await (
+                await connection.execute(
+                    sql.SQL(
+                        """SELECT context.run_id::text, context.incident_id::text,
+                        context.scenario_id::text, context.sandbox_id::text
+                        FROM {} context JOIN {} run ON run.run_id = context.run_id
+                        JOIN {} incident ON incident.incident_id = context.incident_id
+                        JOIN {} scenario ON scenario.scenario_id = context.scenario_id
+                        WHERE context.run_context_sha256 = %s AND context.status = 'active'
+                          AND run.status IN ('queued', 'running', 'waiting_approval')
+                          AND incident.sandbox_id = context.sandbox_id
+                          AND scenario.sandbox_id = context.sandbox_id
+                          AND scenario.status = 'active'"""
+                    ).format(
+                        self.table("agent_run_contexts"),
+                        self.table("agent_runs"),
+                        self.table("incidents"),
+                        self.table("scenario_runs"),
+                    ),
+                    (digest,),
+                )
+            ).fetchone()
+        return dict(row) if row else None
+
+    async def terminate_run_context(self, incident_id: str) -> None:
+        async with self._pool.connection() as connection:
+            await connection.execute(
+                sql.SQL(
+                    """UPDATE {} context SET status = 'terminal', terminal_at = NOW()
+                    FROM {} run WHERE context.run_id = run.run_id
+                      AND run.incident_id = %s::uuid AND context.status = 'active'"""
+                ).format(self.table("agent_run_contexts"), self.table("agent_runs")),
+                (incident_id,),
+            )
+            await connection.commit()
 
     async def append_activity(
         self,
@@ -1050,7 +1242,7 @@ class LakebaseCommandCenterRepository:
                 run = await (
                     await connection.execute(
                         sql.SQL(
-                            """SELECT run.run_id FROM {} run
+                            """SELECT run.run_id, run.sandbox_id FROM {} run
                             JOIN {} incident ON incident.incident_id = run.incident_id
                             JOIN {} scenario ON scenario.scenario_id = incident.scenario_id
                             WHERE run.incident_id = %s::uuid AND scenario.status = 'active'
@@ -1068,13 +1260,15 @@ class LakebaseCommandCenterRepository:
                     return
                 await connection.execute(
                     sql.SQL(
-                        "INSERT INTO {} (event_id, run_id, sequence, event_type, title, detail, "
-                        "status, runtime_metadata) SELECT %s, %s, COALESCE(MAX(sequence), 0) + 1, "
+                        "INSERT INTO {} (event_id, run_id, sandbox_id, sequence, event_type, "
+                        "title, detail, status, runtime_metadata) "
+                        "SELECT %s, %s, %s, COALESCE(MAX(sequence), 0) + 1, "
                         "%s, %s, %s, %s, %s FROM {} WHERE run_id = %s"
                     ).format(self.table("activity_events"), self.table("activity_events")),
                     (
                         uuid4(),
                         run["run_id"],
+                        run["sandbox_id"],
                         activity.category,
                         activity.title,
                         activity.summary,
@@ -1101,7 +1295,7 @@ class LakebaseCommandCenterRepository:
                 active = await (
                     await connection.execute(
                         sql.SQL(
-                            """SELECT run.run_id FROM {} run
+                            """SELECT run.run_id, run.sandbox_id FROM {} run
                             JOIN {} incident ON incident.incident_id = run.incident_id
                             JOIN {} scenario ON scenario.scenario_id = incident.scenario_id
                             WHERE run.incident_id = %s::uuid
@@ -1153,7 +1347,7 @@ class LakebaseCommandCenterRepository:
                 active = await (
                     await connection.execute(
                         sql.SQL(
-                            """SELECT run.run_id FROM {} run
+                            """SELECT run.run_id, run.sandbox_id FROM {} run
                             JOIN {} incident ON incident.incident_id = run.incident_id
                             JOIN {} scenario ON scenario.scenario_id = incident.scenario_id
                             WHERE run.incident_id = %s::uuid
@@ -1242,7 +1436,7 @@ class LakebaseCommandCenterRepository:
                 run = await (
                     await connection.execute(
                         sql.SQL(
-                            """SELECT run.run_id FROM {} run
+                            """SELECT run.run_id, run.sandbox_id FROM {} run
                             JOIN {} incident ON incident.incident_id = run.incident_id
                             JOIN {} scenario ON scenario.scenario_id = incident.scenario_id
                             WHERE run.incident_id = %s::uuid
@@ -1265,15 +1459,17 @@ class LakebaseCommandCenterRepository:
                     return False
                 await connection.execute(
                     sql.SQL(
-                        """INSERT INTO {} (receipt_id, run_id, incident_id, elicitation_id,
+                        """INSERT INTO {} (receipt_id, run_id, incident_id, sandbox_id,
+                        elicitation_id,
                         request_sha256, approving_subject, decision, requested_at, decided_at,
-                        completed_at) VALUES (%s, %s, %s::uuid, %s, %s, %s, %s, %s, %s, %s)
+                        completed_at) VALUES (%s, %s, %s::uuid, %s, %s, %s, %s, %s, %s, %s, %s)
                         ON CONFLICT (elicitation_id) DO NOTHING"""
                     ).format(self.table("governance_receipts")),
                     (
                         uuid4(),
                         run["run_id"],
                         incident_id,
+                        run["sandbox_id"],
                         receipt["elicitation_id"],
                         receipt["request_sha256"],
                         receipt["approving_subject"],
@@ -1477,7 +1673,7 @@ class LakebaseCommandCenterRepository:
                 incident = await (
                     await connection.execute(
                         sql.SQL(
-                            """SELECT incident.incident_id FROM {} incident
+                            """SELECT incident.incident_id, incident.sandbox_id FROM {} incident
                         JOIN {} scenario ON scenario.scenario_id = incident.scenario_id
                         WHERE incident.incident_id = %s::uuid AND scenario.status = 'active'
                         FOR UPDATE OF incident, scenario"""
@@ -1489,14 +1685,17 @@ class LakebaseCommandCenterRepository:
                     return
                 await connection.execute(
                     sql.SQL(
-                        "INSERT INTO {} (message_id, incident_id, sequence, role, content) "
-                        "SELECT %s, %s::uuid, COALESCE(MAX(sequence), 0) + 1, %s, %s "
+                        "INSERT INTO {} (message_id, incident_id, sandbox_id, sequence, "
+                        "role, content) "
+                        "SELECT %s, %s::uuid, %s, COALESCE(MAX(sequence), 0) + 1, %s, %s "
                         "FROM {} WHERE incident_id = %s::uuid"
                     ).format(
                         self.table("conversation_messages"),
                         self.table("conversation_messages"),
                     ),
-                    (uuid4(), incident_id, role, content, incident_id),
+                    (
+                        uuid4(), incident_id, incident["sandbox_id"], role, content, incident_id
+                    ),
                 )
 
     async def record_component_heartbeat(
@@ -1520,16 +1719,21 @@ class LakebaseCommandCenterRepository:
         async with self._pool.connection() as connection:
             await connection.execute(
                 sql.SQL(
-                    "INSERT INTO {} (run_id, scenario_id, identity_subject) VALUES (%s, %s, %s) "
+                    "INSERT INTO {} (run_id, scenario_id, sandbox_id, identity_subject) "
+                    "SELECT %s, %s, run.sandbox_id, %s FROM {} run WHERE run.run_id = %s "
                     "ON CONFLICT (run_id) DO UPDATE SET "
                     "identity_subject = EXCLUDED.identity_subject"
-                ).format(self.table("run_identities")),
-                (run_id, scenario_id, subject),
+                ).format(self.table("run_identities"), self.table("agent_runs")),
+                (run_id, scenario_id, subject, run_id),
             )
             await connection.commit()
 
     async def create_work_order(
-        self, work_order_id: str, incident_id: str, payload: dict[str, Any]
+        self,
+        work_order_id: str,
+        incident_id: str,
+        payload: dict[str, Any],
+        sandbox_id: str | None = None,
     ) -> dict[str, Any]:
         """Create the governed write only for the active, claimed approval replay.
 
@@ -1538,6 +1742,8 @@ class LakebaseCommandCenterRepository:
         longer owns a replay lease.
         """
 
+        if sandbox_id is None:
+            raise ValueError("sandbox_id is required for governed writes")
         async with self._pool.connection() as connection:
             async with connection.transaction():
                 active = await (
@@ -1547,6 +1753,9 @@ class LakebaseCommandCenterRepository:
                             JOIN {} incident ON incident.incident_id = run.incident_id
                             JOIN {} scenario ON scenario.scenario_id = incident.scenario_id
                             WHERE incident.incident_id = %s::uuid
+                              AND incident.sandbox_id = %s::uuid
+                              AND run.sandbox_id = %s::uuid
+                              AND scenario.sandbox_id = %s::uuid
                               AND incident.pump_id = %s
                               AND scenario.status = 'active'
                               AND incident.status = 'waiting_approval'
@@ -1559,7 +1768,7 @@ class LakebaseCommandCenterRepository:
                             self.table("incidents"),
                             self.table("scenario_runs"),
                         ),
-                        (incident_id, payload["asset_id"]),
+                        (incident_id, sandbox_id, sandbox_id, sandbox_id, payload["asset_id"]),
                     )
                 ).fetchone()
                 if not active:
@@ -1569,14 +1778,19 @@ class LakebaseCommandCenterRepository:
                     )
                 await connection.execute(
                     sql.SQL(
-                        """INSERT INTO {} (work_order_id, incident_id, pump_id, action, status,
+                        """INSERT INTO {} (work_order_id, incident_id, sandbox_id,
+                        pump_id, action, status,
                         submitted_at, submitted_by, governance_receipt)
-                        SELECT %s, incident.incident_id, incident.pump_id, %s, 'scheduled',
+                        SELECT %s, incident.incident_id, incident.sandbox_id,
+                               incident.pump_id, %s, 'scheduled',
                                NOW(), %s, %s
                         FROM {} incident
                         JOIN {} scenario ON scenario.scenario_id = incident.scenario_id
                         JOIN {} run ON run.incident_id = incident.incident_id
                         WHERE incident.incident_id = %s::uuid
+                          AND incident.sandbox_id = %s::uuid
+                          AND run.sandbox_id = %s::uuid
+                          AND scenario.sandbox_id = %s::uuid
                           AND incident.pump_id = %s
                           AND scenario.status = 'active'
                           AND incident.status = 'waiting_approval'
@@ -1596,6 +1810,9 @@ class LakebaseCommandCenterRepository:
                         payload.get("submitted_by", "governed-agent"),
                         Jsonb(payload.get("governance_receipt", {})),
                         incident_id,
+                        sandbox_id,
+                        sandbox_id,
+                        sandbox_id,
                         payload["asset_id"],
                     ),
                 )
@@ -1608,6 +1825,10 @@ class LakebaseCommandCenterRepository:
                             JOIN {} run ON run.incident_id = incident.incident_id
                             WHERE work_order.work_order_id = %s
                               AND work_order.incident_id = %s::uuid
+                              AND work_order.sandbox_id = %s::uuid
+                              AND incident.sandbox_id = %s::uuid
+                              AND run.sandbox_id = %s::uuid
+                              AND scenario.sandbox_id = %s::uuid
                               AND work_order.pump_id = %s
                               AND scenario.status = 'active'
                               AND incident.status = 'waiting_approval'
@@ -1620,7 +1841,10 @@ class LakebaseCommandCenterRepository:
                             self.table("scenario_runs"),
                             self.table("agent_runs"),
                         ),
-                        (work_order_id, incident_id, payload["asset_id"]),
+                        (
+                            work_order_id, incident_id, sandbox_id, sandbox_id,
+                            sandbox_id, sandbox_id, payload["asset_id"]
+                        ),
                     )
                 ).fetchone()
                 if not row:
@@ -1637,18 +1861,23 @@ class LakebaseCommandCenterRepository:
             "created_at": row["created_at"].isoformat(),
         }
 
-    async def telemetry_window(self, asset_id: str, limit: int = 12) -> list[dict[str, Any]]:
+    async def telemetry_window(
+        self, asset_id: str, limit: int = 12, sandbox_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        if sandbox_id is None:
+            raise ValueError("sandbox_id is required for telemetry reads")
         async with self._pool.connection() as connection:
             rows = await (
                 await connection.execute(
                     sql.SQL(
                         "SELECT vibration_mm_s, flow_m3h, motor_current_a, bearing_temperature_c "
                         "FROM {} WHERE scenario_id = ("
-                        "SELECT scenario_id::text FROM {} WHERE status = 'active' "
+                        "SELECT scenario_id::text FROM {} WHERE sandbox_id = %s::uuid "
+                        "AND status = 'active' "
                         "ORDER BY started_at DESC LIMIT 1) AND pump_id = %s "
                         "ORDER BY event_time DESC LIMIT %s"
                     ).format(self.table("telemetry_events"), self.table("scenario_runs")),
-                    (asset_id, limit),
+                    (sandbox_id, asset_id, limit),
                 )
             ).fetchall()
         return [dict(row) for row in reversed(rows)]

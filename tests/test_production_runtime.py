@@ -71,9 +71,11 @@ async def test_unusable_rationale_falls_back_and_selected_tool_executes(
     )
     runtime.repository = SimpleNamespace(
         incident=AsyncMock(return_value=incident),
+        create_run_context=AsyncMock(return_value="opaque-run-context"),
         append_activity=AsyncMock(),
         complete_incident=AsyncMock(),
         fail_incident=AsyncMock(),
+        terminate_run_context=AsyncMock(),
     )
     runtime.settings = SimpleNamespace(
         governed_skill_tool="reliability-investigation",
@@ -149,10 +151,11 @@ async def test_unusable_rationale_falls_back_and_selected_tool_executes(
         ),
     )
 
-    await runtime._run_agent("incident-1")
+    await runtime._run_agent_inner("incident-1", "sandbox-1")
 
     submitted = runtime.gateway.call_tool.await_args.args[1]
     assert submitted["planned_window"] == "immediate maintenance"
+    assert submitted["_run_context"] == "opaque-run-context"
     assert submitted["rationale"] == (
         "Replace drive-end bearing for P-204 because persistent drive-end vibration, "
         "requiring immediate maintenance."
@@ -240,7 +243,9 @@ async def test_repeated_gateway_ask_leaves_waiting_state_unchanged() -> None:
     )
     runtime.repository.release_pending_approval = AsyncMock()
 
-    assert await runtime._retry_pending("incident-1", pending, "operator@databricks.com") is False
+    assert await runtime._retry_pending(
+        "incident-1", pending, "operator@databricks.com", "sandbox-1"
+    ) is False
     runtime.repository.claim_pending_approval.assert_awaited_once_with(
         "incident-1", "operator@databricks.com"
     )
@@ -279,7 +284,9 @@ async def test_successful_replay_records_exact_request_receipt_before_completion
     runtime._complete_governed_action = AsyncMock()
     runtime._generate_post_approval_response = AsyncMock()
 
-    assert await runtime._retry_pending("incident-1", pending, "operator@databricks.com")
+    assert await runtime._retry_pending(
+        "incident-1", pending, "operator@databricks.com", "sandbox-1"
+    )
 
     receipt_call = runtime.repository.record_governance_receipt.await_args
     assert receipt_call.args[:2] == ("incident-1", "WO-10482")
@@ -324,7 +331,9 @@ async def test_successful_gateway_call_does_not_finalize_after_claim_is_lost() -
     runtime._complete_governed_action = AsyncMock()
     runtime._generate_post_approval_response = AsyncMock()
 
-    assert not await runtime._retry_pending("incident-1", pending, "operator@databricks.com")
+    assert not await runtime._retry_pending(
+        "incident-1", pending, "operator@databricks.com", "sandbox-1"
+    )
     runtime.repository.record_governance_receipt.assert_awaited_once()
     runtime._complete_governed_action.assert_not_awaited()
     runtime._generate_post_approval_response.assert_not_awaited()
@@ -463,7 +472,7 @@ async def test_follow_up_persists_exact_model_output_and_tokens() -> None:
         append_conversation=AsyncMock(),
     )
 
-    await runtime.follow_up("incident-1", "What happened?")
+    await runtime.follow_up("incident-1", "What happened?", "sandbox-1")
 
     activity = runtime.repository.append_activity.await_args.args[1]
     assert activity.title == "Model execution"
@@ -568,15 +577,13 @@ def test_terminal_response_is_canonicalized_without_discarding_model_wording() -
     )
 
 
-def runtime_for_handover(repository) -> ProductionCommandCenterRuntime:
+def runtime_for_sandboxes(repository) -> ProductionCommandCenterRuntime:
     runtime = ProductionCommandCenterRuntime.__new__(ProductionCommandCenterRuntime)
     runtime.repository = repository
     runtime.identities = OboIdentityRegistry()
     runtime._user_identities = OboIdentityRegistry()
-    runtime._run_tasks = set()
-    runtime._operator_change_lock = asyncio.Lock()
-    runtime._identity_scenario_id = "old-scenario"
-    runtime._last_subject = None
+    runtime._run_tasks = {}
+    runtime._sandbox_locks = {"sandbox-a": asyncio.Lock(), "sandbox-b": asyncio.Lock()}
     return runtime
 
 
@@ -584,7 +591,8 @@ def runtime_for_handover(repository) -> ProductionCommandCenterRuntime:
 async def test_restart_cancels_old_agent_tasks_before_repository_reset() -> None:
     events: list[str] = []
 
-    async def reset(_subject):
+    async def reset(sandbox_id, _subject):
+        assert sandbox_id == "sandbox-a"
         events.append("repository-reset")
         return "fresh-scenario"
 
@@ -594,62 +602,40 @@ async def test_restart_cancels_old_agent_tasks_before_repository_reset() -> None
         finally:
             events.append("agent-stopped")
 
-    repository = SimpleNamespace(restart_scenario=reset)
-    runtime = runtime_for_handover(repository)
+    repository = SimpleNamespace(
+        restart_scenario=reset,
+        active_sandboxes=AsyncMock(
+            return_value=[SimpleNamespace(id="sandbox-a", scenario_id="old-scenario")]
+        ),
+    )
+    runtime = runtime_for_sandboxes(repository)
     task = asyncio.create_task(old_agent())
-    runtime._run_tasks.add(task)
+    other = asyncio.create_task(asyncio.sleep(10))
+    runtime._run_tasks[task] = "sandbox-a"
+    runtime._run_tasks[other] = "sandbox-b"
     runtime.identities.capture("old-scenario", "old-token")
     await asyncio.sleep(0)
 
-    scenario_id = await runtime.restart()
+    scenario_id = await runtime.restart("sandbox-a", "alice@databricks.com")
 
     assert scenario_id == "fresh-scenario"
     assert events == ["agent-stopped", "repository-reset"]
     assert runtime.identities.get("old-scenario") is None
-    assert runtime._identity_scenario_id is None
+    assert not other.cancelled()
+    other.cancel()
+    await asyncio.gather(other, return_exceptions=True)
 
 
-@pytest.mark.asyncio
-async def test_handover_binds_cached_selected_operator_token_to_fresh_scenario() -> None:
-    repository = SimpleNamespace(handover_operator=AsyncMock(return_value="fresh-scenario"))
-    runtime = runtime_for_handover(repository)
-    runtime.cache_user_identity("bob@databricks.com", "bob-live-token")
-    old_review = asyncio.create_task(asyncio.sleep(10))
-    runtime._run_tasks.add(old_review)
+def test_model_visible_tool_schema_excludes_internal_run_context() -> None:
+    from backend.production_runtime import _model_visible_schema
 
-    scenario_id = await runtime.handover_operator(3, "bob@databricks.com", "alice@databricks.com")
-
-    assert scenario_id == "fresh-scenario"
-    assert runtime.identities.get("fresh-scenario").token == "bob-live-token"
-    assert runtime._identity_scenario_id == "fresh-scenario"
-    assert old_review.cancelled()
-
-
-@pytest.mark.asyncio
-async def test_handover_without_cached_operator_token_leaves_evaluator_waiting() -> None:
-    repository = SimpleNamespace(handover_operator=AsyncMock(return_value="fresh-scenario"))
-    runtime = runtime_for_handover(repository)
-
-    await runtime.handover_operator(3, "bob@databricks.com", "alice@databricks.com")
-
-    assert runtime.identities.get("fresh-scenario") is None
-    assert runtime._identity_scenario_id is None
-
-
-@pytest.mark.asyncio
-async def test_rejected_stale_handover_does_not_cancel_active_reviews() -> None:
-    repository = SimpleNamespace(
-        handover_operator=AsyncMock(side_effect=ValueError("stale operator version"))
+    visible = _model_visible_schema(
+        {
+            "type": "object",
+            "properties": {"asset_id": {"type": "string"}, "_run_context": {"type": "string"}},
+            "required": ["asset_id", "_run_context"],
+        }
     )
-    runtime = runtime_for_handover(repository)
-    active_review = asyncio.create_task(asyncio.sleep(10))
-    runtime._run_tasks.add(active_review)
 
-    with pytest.raises(ValueError, match="stale operator version"):
-        await runtime.handover_operator(2, "bob@databricks.com", "alice@databricks.com")
-
-    assert not active_review.cancelled()
-    assert not active_review.done()
-    assert runtime._identity_scenario_id == "old-scenario"
-    active_review.cancel()
-    await asyncio.gather(active_review, return_exceptions=True)
+    assert "_run_context" not in visible["properties"]
+    assert visible["required"] == ["asset_id"]

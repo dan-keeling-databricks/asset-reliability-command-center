@@ -60,10 +60,10 @@ def test_runtime_mutations_are_fenced_by_active_scenario_and_approval_claim() ->
 
 def wait_repository(*, revision: int = 0, coalesce_seconds: float = 0.01):
     repository = LakebaseCommandCenterRepository.__new__(LakebaseCommandCenterRepository)
-    repository._revision = revision
+    repository._revisions = {"sandbox-1": revision}
     repository._change_condition = asyncio.Condition()
     repository._change_counter = 0
-    repository._handled_change_counter = 0
+    repository._handled_change_counters = {}
     repository._sse_coalesce_seconds = coalesce_seconds
     return repository
 
@@ -79,7 +79,9 @@ async def test_wait_for_change_does_not_snapshot_before_notification() -> None:
     repository = wait_repository()
     repository.snapshot = AsyncMock(return_value=SimpleNamespace(revision=1))
 
-    waiting = asyncio.create_task(repository.wait_for_change(0, timeout=0.5))
+    waiting = asyncio.create_task(
+        repository.wait_for_change(0, timeout=0.5, sandbox_id="sandbox-1")
+    )
     await asyncio.sleep(0.01)
     repository.snapshot.assert_not_awaited()
 
@@ -95,7 +97,9 @@ async def test_wait_for_change_coalesces_notification_burst_into_one_snapshot() 
     repository = wait_repository(coalesce_seconds=0.02)
     repository.snapshot = AsyncMock(return_value=SimpleNamespace(revision=1))
 
-    waiting = asyncio.create_task(repository.wait_for_change(0, timeout=0.5))
+    waiting = asyncio.create_task(
+        repository.wait_for_change(0, timeout=0.5, sandbox_id="sandbox-1")
+    )
     await asyncio.sleep(0)
     await notify(repository)
     await asyncio.sleep(0.005)
@@ -115,7 +119,9 @@ async def test_wait_for_change_consumes_notification_pending_before_wait() -> No
     repository._change_counter = 1
     repository.snapshot = AsyncMock(return_value=SimpleNamespace(revision=1))
 
-    result = await asyncio.wait_for(repository.wait_for_change(0, timeout=10), timeout=0.1)
+    result = await asyncio.wait_for(
+        repository.wait_for_change(0, timeout=10, sandbox_id="sandbox-1"), timeout=0.1
+    )
 
     assert result.revision == 1
     repository.snapshot.assert_awaited_once()
@@ -126,7 +132,7 @@ async def test_wait_for_change_timeout_snapshots_once_for_keep_alive() -> None:
     repository = wait_repository()
     repository.snapshot = AsyncMock(return_value=SimpleNamespace(revision=4))
 
-    result = await repository.wait_for_change(4, timeout=0.01)
+    result = await repository.wait_for_change(4, timeout=0.01, sandbox_id="sandbox-1")
 
     assert result.revision == 4
     repository.snapshot.assert_awaited_once()
@@ -137,7 +143,9 @@ async def test_wait_for_change_snapshots_immediately_for_advanced_revision() -> 
     repository = wait_repository(revision=5)
     repository.snapshot = AsyncMock(return_value=SimpleNamespace(revision=5))
 
-    result = await asyncio.wait_for(repository.wait_for_change(4, timeout=10), timeout=0.1)
+    result = await asyncio.wait_for(
+        repository.wait_for_change(4, timeout=10, sandbox_id="sandbox-1"), timeout=0.1
+    )
 
     assert result.revision == 5
     repository.snapshot.assert_awaited_once()
@@ -199,7 +207,7 @@ def test_sequence_allocation_locks_parent_rows() -> None:
 
     assert "SELECT run.run_id FROM {} run" in source
     assert "FOR UPDATE OF run" in source
-    assert "SELECT incident.incident_id FROM {} incident" in source
+    assert "SELECT incident.incident_id, incident.sandbox_id FROM {} incident" in source
     assert "FOR UPDATE OF incident" in source
 
 
@@ -275,10 +283,42 @@ async def test_telemetry_window_queries_active_scenario_without_snapshot() -> No
     repository._pool = FakePool(connection)
     repository.snapshot = AsyncMock(side_effect=AssertionError("snapshot must not be called"))
 
-    result = await repository.telemetry_window("P-204", limit=2)
+    result = await repository.telemetry_window("P-204", limit=2, sandbox_id="sandbox-1")
 
     assert [row["vibration_mm_s"] for row in result] == [4.7, 4.8]
     assert 'FROM "asset_reliability"."scenario_runs"' in connection.query
     assert "status = 'active'" in connection.query
-    assert connection.parameters == ("P-204", 2)
+    assert connection.parameters == ("sandbox-1", "P-204", 2)
     repository.snapshot.assert_not_awaited()
+
+
+def test_schema_defines_rate_slot_resolution_and_personal_sandbox_isolation() -> None:
+    schema = (Path(__file__).resolve().parents[1] / "sql" / "lakebase_schema.sql").read_text()
+
+    assert "CREATE TABLE IF NOT EXISTS asset_reliability.sandboxes" in schema
+    assert "CREATE TABLE IF NOT EXISTS asset_reliability.sandbox_slots" in schema
+    assert "CREATE TABLE IF NOT EXISTS asset_reliability.sandbox_controls" in schema
+    assert "one_active_scenario_per_sandbox" in schema
+    assert "resolve_personal_sandbox_telemetry" in schema
+    assert "RETURN NULL" in schema
+    assert "GREATEST(0, EXTRACT(EPOCH" in schema
+    assert "record_rate_rtm_heartbeat" in schema
+    assert "FOR EACH STATEMENT" in schema
+    assert "'rate-rtm', NOW(), 'healthy'" in schema
+    assert "CREATE TABLE IF NOT EXISTS asset_reliability.agent_run_contexts" in schema
+    assert "run_context_sha256" in schema
+
+
+def test_allocator_reclaims_only_expired_slots_under_database_locks() -> None:
+    source = (
+        Path(__file__).resolve().parents[1] / "backend" / "lakebase_repository.py"
+    ).read_text()
+
+    assert "pg_advisory_xact_lock(hashtextextended" in source
+    assert "lease_expires_at <= NOW()" in source
+    assert "FOR UPDATE SKIP LOCKED LIMIT 1" in source
+    assert "status = 'expired'" in source
+    allocator = source[
+        source.index("async def resolve_sandbox"):source.index("async def active_sandboxes")
+    ]
+    assert "governance_receipts" not in allocator

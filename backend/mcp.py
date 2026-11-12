@@ -80,6 +80,15 @@ TOOLS: list[dict[str, Any]] = [
     },
 ]
 
+INTERNAL_RUN_CONTEXT = "_run_context"
+for _tool in TOOLS:
+    _schema = _tool["inputSchema"]
+    _schema["properties"][INTERNAL_RUN_CONTEXT] = {
+        "type": "string",
+        "description": "Internal runtime capability; injected by the App after model selection.",
+    }
+    _schema["required"] = [*_schema.get("required", []), INTERNAL_RUN_CONTEXT]
+
 
 class AssetReliabilityMCP:
     """Minimal JSON-RPC MCP server over canonical repository operations."""
@@ -135,8 +144,24 @@ class AssetReliabilityMCP:
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         """Dispatch a validated MCP call and return structured content."""
 
+        arguments = dict(arguments)
+        raw_context = str(arguments.pop(INTERNAL_RUN_CONTEXT, ""))
+        if not raw_context:
+            raise ValueError("Missing internal agent run context")
+        context = await self.repository.resolve_run_context(raw_context)
+        if not context:
+            raise ValueError("Unknown or terminal agent run context")
+        sandbox_id = context["sandbox_id"]
+        incident = await self.repository.incident(context["incident_id"], sandbox_id)
+        if not incident:
+            raise ValueError("Run context does not resolve to an incident in its sandbox")
+        if arguments.get("incident_id") not in (None, context["incident_id"]):
+            raise ValueError("Cross-incident tool request rejected")
+        if arguments.get("asset_id") != incident.asset_id:
+            raise ValueError("Tool asset does not match the run-context incident")
+
         if name == "get_asset_telemetry":
-            pump = await self._pump(arguments["asset_id"])
+            pump = await self._pump(arguments["asset_id"], sandbox_id)
             return {
                 "asset_id": pump.asset_id,
                 "vibration_mm_s": pump.vibration_mm_s,
@@ -148,8 +173,10 @@ class AssetReliabilityMCP:
             }
         if name == "assess_failure_risk":
             await asyncio.sleep(6)
-            pump = await self._pump(arguments["asset_id"])
-            window = await self.repository.telemetry_window(arguments["asset_id"], limit=12)
+            pump = await self._pump(arguments["asset_id"], sandbox_id)
+            window = await self.repository.telemetry_window(
+                arguments["asset_id"], limit=12, sandbox_id=sandbox_id
+            )
             recent = window[-6:]
             if len(recent) >= 2:
                 vibration_change = recent[-1]["vibration_mm_s"] - recent[0]["vibration_mm_s"]
@@ -198,7 +225,7 @@ class AssetReliabilityMCP:
                 "sustained_threshold_exceedance": sustained,
             }
         if name == "prepare_work_order":
-            await self._pump(arguments["asset_id"])
+            await self._pump(arguments["asset_id"], sandbox_id)
             return {
                 "asset_id": arguments["asset_id"],
                 "incident_id": arguments["incident_id"],
@@ -209,7 +236,7 @@ class AssetReliabilityMCP:
                 "planned_window": "next available maintenance window",
             }
         if name == "submit_work_order":
-            await self._pump(arguments["asset_id"])
+            await self._pump(arguments["asset_id"], sandbox_id)
             if arguments["planned_window"] != "immediate maintenance":
                 raise ValueError("planned_window must be immediate maintenance")
             rationale = " ".join(str(arguments["rationale"]).split())
@@ -227,11 +254,12 @@ class AssetReliabilityMCP:
                     "rationale": rationale,
                     "part": "BRG-6312-C3",
                 },
+                sandbox_id=sandbox_id,
             )
         raise ValueError(f"Unknown tool: {name}")
 
-    async def _pump(self, asset_id: str):
-        snapshot = await self.repository.snapshot()
+    async def _pump(self, asset_id: str, sandbox_id: str):
+        snapshot = await self.repository.snapshot(sandbox_id)
         pump = next((item for item in snapshot.pumps if item.asset_id == asset_id), None)
         if not pump:
             raise ValueError(f"Unknown asset: {asset_id}")

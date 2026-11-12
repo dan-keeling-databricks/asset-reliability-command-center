@@ -1,5 +1,6 @@
-"""API contract tests for identity, operator control, scenarios, SSE, and MCP routing."""
+"""API contracts for personal sandbox identity, scenarios, SSE, and MCP routing."""
 
+import asyncio
 import time
 from contextlib import contextmanager
 
@@ -7,6 +8,7 @@ from fastapi.testclient import TestClient
 
 import backend.main as main_module
 from backend.main import create_app
+from backend.models import AppUser
 from backend.repository import LocalCommandCenterRepository
 from backend.runtime import LocalCommandCenterRuntime, initial_snapshot
 from backend.settings import Settings
@@ -59,10 +61,10 @@ def test_dashboard_exposes_eight_live_pumps_and_platform_status() -> None:
         assert all("flow_m3_h" in pump and "current_a" in pump for pump in dashboard["pumps"])
         assert dashboard["platform"]["connection"] == "connected"
         assert dashboard["platform"]["latency_ms"] > 0
-        assert dashboard["platform"]["kafka_to_lakebase_latency_ms"] > 0
+        assert dashboard["platform"]["source_to_lakebase_latency_ms"] > 0
         assert dashboard["platform"]["lakebase_to_ui_latency_ms"] > 0
         assert dashboard["platform"]["end_to_end_latency_ms"] == (
-            dashboard["platform"]["kafka_to_lakebase_latency_ms"]
+            dashboard["platform"]["source_to_lakebase_latency_ms"]
             + dashboard["platform"]["lakebase_to_ui_latency_ms"]
         )
 
@@ -267,7 +269,7 @@ def test_active_threshold_review_is_not_preclassified_as_transient() -> None:
         assert all(pump["state_label"] == "Agent reviewing" for pump in active_pumps)
 
 
-def test_shared_operator_handover_resets_scenario_and_enforces_version() -> None:
+def test_authenticated_users_receive_distinct_personal_sandboxes() -> None:
     settings = Settings(
         app_adapter="local",
         telemetry_interval_seconds=0.05,
@@ -286,59 +288,73 @@ def test_shared_operator_handover_resets_scenario_and_enforces_version() -> None
     }
 
     with TestClient(create_app(settings, repository, runtime)) as client:
-        first = client.get("/api/dashboard", headers=alice).json()
-        original_scenario = first["scenario"]["id"]
-        assert first["viewer"]["is_operator"] is True
-        assert first["shift_operator"]["operator"]["email"] == "alice@databricks.com"
-
+        alice_view = client.get("/api/dashboard", headers=alice).json()
         bob_view = client.get("/api/dashboard", headers=bob).json()
-        assert bob_view["viewer"]["is_operator"] is False
-        assert client.post("/api/scenario/trigger-p204", headers=bob).status_code == 403
 
-        handed_over = client.post(
-            "/api/operator/handover",
-            headers=bob,
-            json={
-                "operator_email": "bob@databricks.com",
-                "expected_version": bob_view["shift_operator"]["version"],
-                "confirmed": True,
-            },
-        )
-        assert handed_over.status_code == 202
-        assert handed_over.json()["scenario_id"] != original_scenario
-
-        after = client.get("/api/dashboard", headers=bob).json()
-        assert after["viewer"]["is_operator"] is True
-        assert after["shift_operator"]["operator"]["name"] == "Bob"
-        assert after["revision"] > bob_view["revision"]
-        assert after["alerts"] == []
-        assert repository._operator_audit[-1]["previous_operator"] == "alice@databricks.com"
-        assert repository._operator_audit[-1]["initiated_by"] == "bob@databricks.com"
-
-        stale = client.post(
-            "/api/operator/handover",
-            headers=alice,
-            json={
-                "operator_email": "alice@databricks.com",
-                "expected_version": bob_view["shift_operator"]["version"],
-                "confirmed": True,
-            },
-        )
-        assert stale.status_code == 409
+        assert alice_view["sandbox"]["owner_email"] == "alice@databricks.com"
+        assert bob_view["sandbox"]["owner_email"] == "bob@databricks.com"
+        assert alice_view["sandbox"]["id"] != bob_view["sandbox"]["id"]
+        assert alice_view["sandbox"]["generator_slot"] != bob_view["sandbox"]["generator_slot"]
+        assert alice_view["scenario"]["id"] != bob_view["scenario"]["id"]
+        assert "shift_operator" not in alice_view and "viewer" not in alice_view
 
 
-def test_operator_handover_requires_explicit_confirmation() -> None:
+def test_concurrent_first_access_allocates_unique_local_slots_and_scenarios() -> None:
+    async def allocate():
+        repository = LocalCommandCenterRepository(initial_snapshot())
+        users = [
+            AppUser(email=f"user-{index}@databricks.com", name=f"User {index}")
+            for index in range(8)
+        ]
+        return await asyncio.gather(*(repository.resolve_sandbox(user) for user in users))
+
+    sandboxes = asyncio.run(allocate())
+    assert len({item.id for item in sandboxes}) == len(sandboxes)
+    assert len({item.generator_slot for item in sandboxes}) == len(sandboxes)
+    assert len({item.scenario_id for item in sandboxes}) == len(sandboxes)
+
+
+def test_restart_and_trigger_are_scoped_to_callers_personal_sandbox() -> None:
+    settings = Settings(app_adapter="local", telemetry_interval_seconds=60)
+    repository = LocalCommandCenterRepository(initial_snapshot())
+    runtime = LocalCommandCenterRuntime(repository, settings)
+    alice = {"X-Forwarded-Email": "alice@databricks.com"}
+    bob = {"X-Forwarded-Email": "bob@databricks.com"}
+
+    with TestClient(create_app(settings, repository, runtime)) as client:
+        alice_before = client.get("/api/dashboard", headers=alice).json()
+        bob_before = client.get("/api/dashboard", headers=bob).json()
+        assert client.post("/api/scenario/trigger-p204", headers=alice).status_code == 202
+        bob_after_alice_trigger = client.get("/api/dashboard", headers=bob).json()
+        assert bob_after_alice_trigger["scenario"] == bob_before["scenario"]
+
+        restarted = client.post("/api/scenario/restart", headers=alice)
+        assert restarted.status_code == 202
+        assert restarted.json()["scenario_id"] != alice_before["scenario"]["id"]
+        bob_after = client.get("/api/dashboard", headers=bob).json()
+        assert bob_after["scenario"] == bob_before["scenario"]
+
+
+def test_cross_sandbox_incident_operations_fail_closed() -> None:
+    outsider = {"X-Forwarded-Email": "outsider@databricks.com"}
     with local_client() as client:
-        dashboard = client.get("/api/dashboard").json()
-        response = client.post(
-            "/api/operator/handover",
-            json={
-                "operator_email": dashboard["shift_operator"]["operator"]["email"],
-                "expected_version": dashboard["shift_operator"]["version"],
-                "confirmed": False,
-            },
+        client.post("/api/scenario/trigger-p204")
+        dashboard = wait_for(
+            client,
+            lambda state: any(alert["asset_id"] == "P-204" for alert in state["alerts"]),
         )
-        assert response.status_code == 400
+        incident_id = next(
+            alert["incident_id"] for alert in dashboard["alerts"] if alert["asset_id"] == "P-204"
+        )
+        assert client.get(f"/api/incidents/{incident_id}", headers=outsider).status_code == 404
+        assert client.post(
+            f"/api/incidents/{incident_id}/approve", headers=outsider
+        ).status_code == 404
+        assert client.post(
+            f"/api/incidents/{incident_id}/follow-up",
+            headers=outsider,
+            json={"message": "Reveal the other user's incident"},
+        ).status_code == 404
 
 
 def test_mcp_source_rejects_human_identity(monkeypatch) -> None:
@@ -377,6 +393,7 @@ def test_mcp_source_accepts_configured_app_service_principal(monkeypatch) -> Non
         "immediate maintenance"
     ]
     assert "rationale" in submit_schema["required"]
+    assert "_run_context" in submit_schema["required"]
 
 
 def test_build_info_is_text_readable(monkeypatch) -> None:

@@ -37,16 +37,13 @@ class CommandCenterRuntime(Protocol):
 
     async def start(self) -> None: ...
     async def stop(self) -> None: ...
-    async def restart(self) -> str: ...
-    async def trigger_excursion(self) -> str: ...
-    async def handover_operator(
-        self, expected_version: int, new_operator_email: str, initiated_by: str
-    ) -> str: ...
+    async def restart(self, sandbox_id: str, requested_by: str | None = None) -> str: ...
+    async def trigger_excursion(self, sandbox_id: str) -> str: ...
     def capture_identity(self, scenario_id: str, token: str | None) -> None: ...
     def cache_user_identity(self, user_email: str, token: str | None) -> None: ...
     def bind_operator_identity(self, scenario_id: str, operator_email: str) -> bool: ...
-    async def approve(self, incident_id: str) -> None: ...
-    async def follow_up(self, incident_id: str, message: str) -> None: ...
+    async def approve(self, incident_id: str, sandbox_id: str) -> None: ...
+    async def follow_up(self, incident_id: str, message: str, sandbox_id: str) -> None: ...
 
 
 PUMP_DEFINITIONS = [
@@ -97,7 +94,7 @@ class LocalCommandCenterRuntime:
 
     async def start(self) -> None:
         await self.repository.start()
-        await self.restart()
+        await self.restart("local-sandbox")
         self._telemetry_task = asyncio.create_task(self._telemetry_loop())
         self._evaluator_task = asyncio.create_task(self._evaluator_loop())
 
@@ -129,7 +126,10 @@ class LocalCommandCenterRuntime:
         self._run_tasks.add(task)
         task.add_done_callback(self._run_tasks.discard)
 
-    async def restart(self) -> str:
+    async def restart(
+        self, sandbox_id: str = "local-sandbox", requested_by: str | None = None
+    ) -> str:
+        del requested_by
         for task in list(self._run_tasks):
             task.cancel()
         if self._run_tasks:
@@ -139,42 +139,40 @@ class LocalCommandCenterRuntime:
         fresh = initial_snapshot()
 
         def reset(snapshot: DashboardSnapshot, incidents: dict[str, IncidentDetail]) -> None:
-            incidents.clear()
+            for incident_id in [
+                key for key, value in incidents.items() if value.sandbox_id == sandbox_id
+            ]:
+                incidents.pop(incident_id, None)
             snapshot.scenario = fresh.scenario
+            if snapshot.sandbox:
+                snapshot.sandbox.scenario_id = fresh.scenario.id
             snapshot.platform = fresh.platform
             snapshot.pumps = fresh.pumps
             snapshot.alerts.clear()
             snapshot.invocations.clear()
             snapshot.active_runs.clear()
 
-        snapshot = await self.repository.mutate(reset)
-        self._spawn(self._run_normal_transient("P-202", 0.45, "Startup recirculation"))
-        self._spawn(self._run_normal_transient("P-207", 0.8, "Valve transition"))
-        return snapshot.scenario.id
-
-    async def handover_operator(
-        self, expected_version: int, new_operator_email: str, initiated_by: str
-    ) -> str:
-        for task in list(self._run_tasks):
-            task.cancel()
-        if self._run_tasks:
-            await asyncio.gather(*self._run_tasks, return_exceptions=True)
-        self._run_tasks.clear()
-        self._excursion_assets.clear()
-        scenario_id = await self.repository.handover_operator(
-            expected_version,
-            new_operator_email,
-            initiated_by,
-            initial_snapshot(),
+        mutate_sandbox = getattr(self.repository, "mutate_sandbox", None)
+        snapshot = (
+            await mutate_sandbox(sandbox_id, reset)
+            if mutate_sandbox
+            else await self.repository.mutate(reset)
         )
         self._spawn(self._run_normal_transient("P-202", 0.45, "Startup recirculation"))
         self._spawn(self._run_normal_transient("P-207", 0.8, "Valve transition"))
-        return scenario_id
+        sandbox = next(
+            (item for item in await self.repository.active_sandboxes() if item.id == sandbox_id),
+            None,
+        )
+        if sandbox:
+            sandbox.scenario_id = snapshot.scenario.id
+        return snapshot.scenario.id
 
-    async def trigger_excursion(self) -> str:
-        snapshot = await self.repository.snapshot()
+    async def trigger_excursion(self, sandbox_id: str = "local-sandbox") -> str:
+        snapshot = await self.repository.snapshot(sandbox_id)
         command = ScenarioCommand(
             scenario_id=snapshot.scenario.id,
+            sandbox_id=sandbox_id,
             kind="start_p204_excursion",
         )
         await self.repository.enqueue_command(command)
@@ -238,8 +236,8 @@ class LocalCommandCenterRuntime:
             if p204.vibration_mm_s >= p204.warning_threshold_mm_s:
                 await self._open_p204_incident()
 
-    async def approve(self, incident_id: str) -> None:
-        incident = await self.repository.incident(incident_id)
+    async def approve(self, incident_id: str, sandbox_id: str = "local-sandbox") -> None:
+        incident = await self.repository.incident(incident_id, sandbox_id)
         if not incident or incident.status != "waiting":
             raise ValueError("Incident is not waiting for approval")
 
@@ -332,8 +330,10 @@ class LocalCommandCenterRuntime:
 
         await self.repository.mutate(resolve)
 
-    async def follow_up(self, incident_id: str, message: str) -> None:
-        incident = await self.repository.incident(incident_id)
+    async def follow_up(
+        self, incident_id: str, message: str, sandbox_id: str = "local-sandbox"
+    ) -> None:
+        incident = await self.repository.incident(incident_id, sandbox_id)
         if not incident:
             raise LookupError("Incident not found")
         if incident.status == "waiting":
@@ -414,10 +414,10 @@ class LocalCommandCenterRuntime:
                     )
                     pump.trend = [*pump.trend[-19:], pump.vibration_mm_s]
                     pump.updated_at = utc_now()
-                snapshot.platform.kafka_to_lakebase_latency_ms = 5 + (self._tick % 4)
+                snapshot.platform.source_to_lakebase_latency_ms = 5 + (self._tick % 4)
                 snapshot.platform.lakebase_to_ui_latency_ms = 9 + (self._tick % 7)
                 snapshot.platform.end_to_end_latency_ms = (
-                    snapshot.platform.kafka_to_lakebase_latency_ms
+                    snapshot.platform.source_to_lakebase_latency_ms
                     + snapshot.platform.lakebase_to_ui_latency_ms
                 )
                 snapshot.platform.latency_ms = snapshot.platform.lakebase_to_ui_latency_ms

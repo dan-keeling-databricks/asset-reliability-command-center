@@ -43,6 +43,11 @@ class OboIdentityRegistry:
     def clear(self) -> None:
         self._identities.clear()
 
+    def discard(self, key: str) -> None:
+        """Forget one sandbox/scenario credential without disrupting other users."""
+
+        self._identities.pop(key, None)
+
 
 def is_expected_service_principal(
     headers: Mapping[str, str], expected_principal: str | None
