@@ -295,6 +295,22 @@ def stop_obsolete_continuous_job(args: argparse.Namespace, resource_key: str) ->
         )
     )
 
+    # Some workspace versions acknowledge cancel-all-runs without terminating an existing
+    # CONTINUOUS_RESTART parent. Cancel each observed parent explicitly before polling so a
+    # legacy producer can never overlap the replacement Rate source.
+    for run_payload in active_job_runs(args, resource_key):
+        run_id = run_payload.get("run_id")
+        if run_id:
+            run(
+                workspace_command(
+                    args,
+                    "jobs",
+                    "cancel-run",
+                    str(run_id),
+                    "--no-wait",
+                )
+            )
+
     deadline = time.monotonic() + args.timeout_seconds
     while time.monotonic() < deadline:
         if not active_job_runs(args, resource_key):

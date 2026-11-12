@@ -519,3 +519,25 @@ def test_active_job_runs_accepts_cli_top_level_array(monkeypatch) -> None:
     assert deploy_data_plane.active_job_runs(args, "telemetry_producer") == [
         {"run_id": 42, "state": {"life_cycle_state": "RUNNING"}}
     ]
+
+
+def test_obsolete_continuous_job_cancels_each_parent_explicitly(monkeypatch) -> None:
+    args = Namespace(profile="explicit-profile", timeout_seconds=1, poll_seconds=0)
+    commands: list[list[str]] = []
+    active_responses = iter([[{"run_id": 42}], []])
+    monkeypatch.setattr(deploy_data_plane, "resource_id", lambda *_args: "123")
+    monkeypatch.setattr(
+        deploy_data_plane,
+        "active_job_runs",
+        lambda _args, _key: next(active_responses),
+    )
+    monkeypatch.setattr(
+        deploy_data_plane,
+        "run",
+        lambda command, **_kwargs: commands.append(command),
+    )
+
+    deploy_data_plane.stop_obsolete_continuous_job(args, "telemetry_producer")
+
+    assert commands[0][1:4] == ["jobs", "cancel-all-runs", "--job-id"]
+    assert commands[1][1:5] == ["jobs", "cancel-run", "42", "--no-wait"]
