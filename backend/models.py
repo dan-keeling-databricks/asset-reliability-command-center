@@ -21,7 +21,7 @@ class PlatformStatus(BaseModel):
     connection: Literal["connected", "degraded", "offline"] = "connected"
     source_label: str = "Lakebase local adapter"
     latency_ms: int = 12
-    kafka_to_lakebase_latency_ms: int = 6
+    source_to_lakebase_latency_ms: int = 6
     lakebase_to_ui_latency_ms: int = 12
     end_to_end_latency_ms: int = 18
     last_event_at: datetime = Field(default_factory=utc_now)
@@ -128,6 +128,7 @@ class PendingApproval(BaseModel):
 
 class IncidentDetail(BaseModel):
     id: str = Field(default_factory=lambda: new_id("incident"))
+    sandbox_id: str = "local-sandbox"
     scenario_id: str
     asset_id: str
     title: str
@@ -149,6 +150,17 @@ class ScenarioState(BaseModel):
     label: str = "Live reliability scenario"
     p204_triggered: bool = False
     started_at: datetime = Field(default_factory=utc_now)
+
+
+class SandboxState(BaseModel):
+    """Server-resolved personal estate; clients may observe but never select this identity."""
+
+    id: str = Field(default_factory=lambda: new_id("sandbox"))
+    scenario_id: str
+    generator_slot: int = 0
+    owner_email: str = "local.operator@databricks.com"
+    expires_at: datetime | None = None
+    version: int = 0
 
 
 class AppUser(BaseModel):
@@ -174,6 +186,7 @@ class ViewerState(BaseModel):
 class ScenarioCommand(BaseModel):
     id: str = Field(default_factory=lambda: new_id("command"))
     scenario_id: str
+    sandbox_id: str = "local-sandbox"
     kind: Literal["start_p204_excursion"]
     status: Literal["pending", "running", "completed", "failed"] = "pending"
     created_at: datetime = Field(default_factory=utc_now)
@@ -184,13 +197,12 @@ class ScenarioCommand(BaseModel):
 class DashboardSnapshot(BaseModel):
     revision: int = 0
     scenario: ScenarioState = Field(default_factory=ScenarioState)
+    sandbox: SandboxState | None = None
     platform: PlatformStatus = Field(default_factory=PlatformStatus)
     pumps: list[PumpState] = Field(default_factory=list)
     alerts: list[AlertSummary] = Field(default_factory=list)
     invocations: list[InvocationSummary] = Field(default_factory=list)
     active_runs: list[ActiveRun] = Field(default_factory=list)
-    shift_operator: ShiftOperatorState = Field(default_factory=ShiftOperatorState)
-    viewer: ViewerState | None = None
 
 
 class FollowUpRequest(BaseModel):

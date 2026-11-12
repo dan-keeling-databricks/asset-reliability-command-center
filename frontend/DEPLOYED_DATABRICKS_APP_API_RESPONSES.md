@@ -1,5 +1,8 @@
 # Deployed Databricks App API responses
 
+> Historical record: these responses came from the 2026-10-12 Kafka-based App build. They are not
+> the response contract or execution evidence for the personal-sandbox Spark Rate build.
+
 The deployed App `asset-reliability-center` returned the following text-readable responses on
 2026-10-12 UTC.
 

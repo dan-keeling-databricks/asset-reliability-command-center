@@ -112,3 +112,35 @@ def test_reviewed_ui_copy_and_vertical_incident_space_are_preserved() -> None:
     assert "margin: 0 0 24px 13px" in styles
     assert "font-size: calc(20px * var(--font-scale))" in styles
     assert "height: min(calc(50vh + 410px), calc(100vh - 20px))" in styles
+
+
+def test_personal_sandbox_ui_has_no_shared_operator_path() -> None:
+    """Every authenticated user controls only the sandbox resolved by the server."""
+
+    app_source = (ROOT / "frontend/src/App.tsx").read_text()
+    types = (ROOT / "frontend/src/types.ts").read_text()
+    styles = (ROOT / "frontend/src/styles.css").read_text()
+
+    assert "shift_operator" not in app_source
+    assert "selectedOperator" not in app_source
+    assert "isOperator" not in app_source
+    assert "/api/operator/handover" not in app_source
+    assert "Read-only" not in app_source
+    assert "shift_operator" not in types
+    assert "is_operator" not in types
+    assert ".operator-control" not in styles
+    assert ".read-only-banner" not in styles
+    assert "Reset activity in your sandbox only" in app_source
+    assert "source_to_lakebase_latency_ms" in app_source
+    assert "kafka_to_lakebase_latency_ms" not in app_source
+
+
+def test_personal_sandbox_ui_does_not_expose_genie() -> None:
+    """Keep the production-reference Genie component outside the active sandbox experience."""
+
+    app_source = (ROOT / "frontend/src/App.tsx").read_text()
+
+    assert 'import { GenieDrawer } from "./GenieDrawer"' not in app_source
+    assert "<GenieDrawer" not in app_source
+    assert "genieOpen" not in app_source
+    assert "Ask fleet telemetry" not in app_source

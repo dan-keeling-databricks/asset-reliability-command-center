@@ -29,8 +29,7 @@ from backend.models import (
     CommandResponse,
     DashboardSnapshot,
     FollowUpRequest,
-    OperatorHandoverRequest,
-    ViewerState,
+    SandboxState,
 )
 from backend.production_runtime import ProductionCommandCenterRuntime
 from backend.repository import CommandCenterRepository, LocalCommandCenterRepository
@@ -158,6 +157,7 @@ def create_app(
                     settings.telemetry_retention_interval_seconds
                 ),
                 telemetry_retention_batch_size=settings.telemetry_retention_batch_size,
+                sandbox_ttl_seconds=settings.sandbox_ttl_seconds,
             )
         else:
             repository = LocalCommandCenterRepository(initial_snapshot())
@@ -216,33 +216,17 @@ def create_app(
             name=name if name and name.lower() != email else fallback_name,
         )
 
-    async def register_and_snapshot(user: AppUser) -> DashboardSnapshot:
-        await repository.register_user(user)
-        snapshot = await repository.snapshot()
-        operator_email = (
-            snapshot.shift_operator.operator.email if snapshot.shift_operator.operator else None
-        )
-        snapshot.viewer = ViewerState(
-            email=user.email,
-            name=user.name,
-            is_operator=user.email == operator_email,
-        )
-        return snapshot
-
-    def require_operator(snapshot: DashboardSnapshot, user: AppUser) -> None:
-        operator = snapshot.shift_operator.operator
-        if not operator or operator.email != user.email:
-            raise HTTPException(
-                status_code=403,
-                detail=f"Read-only: {operator.name if operator else 'another user'} is operator",
-            )
+    async def resolve_and_snapshot(user: AppUser) -> tuple[SandboxState, DashboardSnapshot]:
+        sandbox = await repository.resolve_sandbox(user)
+        return sandbox, await repository.snapshot(sandbox.id)
 
     @app.get("/api/health")
     async def health() -> dict[str, str]:
         if settings.app_adapter == "local":
             return {"status": "ok", "adapter": settings.app_adapter}
         try:
-            snapshot = await repository.snapshot()
+            sandboxes = await repository.active_sandboxes()
+            snapshot = await repository.snapshot(sandboxes[0].id) if sandboxes else None
         except Exception:  # A health check must report Lakebase failure rather than raise 500.
             return {
                 "status": "offline",
@@ -250,9 +234,17 @@ def create_app(
                 "detail": "Lakebase unavailable",
             }
         return {
-            "status": "ok" if snapshot.platform.connection == "connected" else "degraded",
+            "status": (
+                "ok"
+                if snapshot is None or snapshot.platform.connection == "connected"
+                else "degraded"
+            ),
             "adapter": settings.app_adapter,
-            "detail": snapshot.platform.source_label,
+            "detail": (
+                snapshot.platform.source_label
+                if snapshot
+                else "Lakebase ready · no active personal sandboxes"
+            ),
         }
 
     @app.get("/api/build-info")
@@ -287,9 +279,8 @@ def create_app(
     ) -> dict[str, Any]:
         user = app_user(forwarded_email, forwarded_name)
         runtime.cache_user_identity(user.email, forwarded_token)
-        snapshot = await register_and_snapshot(user)
-        if snapshot.viewer and snapshot.viewer.is_operator:
-            runtime.bind_operator_identity(snapshot.scenario.id, user.email)
+        sandbox, snapshot = await resolve_and_snapshot(user)
+        runtime.bind_operator_identity(sandbox.scenario_id, user.email)
         return snapshot.model_dump(mode="json")
 
     @app.get("/api/incidents/{incident_id}")
@@ -298,9 +289,11 @@ def create_app(
         forwarded_token: str | None = Header(default=None, alias="X-Forwarded-Access-Token"),
         forwarded_email: str | None = Header(default=None, alias="X-Forwarded-Email"),
     ) -> dict[str, Any]:
-        if forwarded_email:
-            runtime.cache_user_identity(forwarded_email, forwarded_token)
-        detail = await repository.incident(incident_id)
+        user = app_user(forwarded_email, None)
+        runtime.cache_user_identity(user.email, forwarded_token)
+        sandbox = await repository.resolve_sandbox(user)
+        runtime.bind_operator_identity(sandbox.scenario_id, user.email)
+        detail = await repository.incident(incident_id, sandbox.id)
         if not detail:
             raise HTTPException(status_code=404, detail="Incident not found")
         return _incident_payload(detail, settings)
@@ -319,9 +312,8 @@ def create_app(
     ) -> CommandResponse:
         user = app_user(forwarded_email, forwarded_name)
         runtime.cache_user_identity(user.email, forwarded_token)
-        snapshot = await register_and_snapshot(user)
-        require_operator(snapshot, user)
-        scenario_id = await runtime.restart()
+        sandbox, _snapshot = await resolve_and_snapshot(user)
+        scenario_id = await runtime.restart(sandbox.id, user.email)
         runtime.capture_identity(scenario_id, forwarded_token)
         return CommandResponse(scenario_id=scenario_id)
 
@@ -339,44 +331,17 @@ def create_app(
     ) -> CommandResponse:
         user = app_user(forwarded_email, forwarded_name)
         runtime.cache_user_identity(user.email, forwarded_token)
-        snapshot = await register_and_snapshot(user)
-        require_operator(snapshot, user)
-        runtime.capture_identity(snapshot.scenario.id, forwarded_token)
+        sandbox, snapshot = await resolve_and_snapshot(user)
+        runtime.capture_identity(sandbox.scenario_id, forwarded_token)
         try:
-            command_id = await runtime.trigger_excursion()
+            command_id = await runtime.trigger_excursion(sandbox.id)
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
-        snapshot = await repository.snapshot()
+        snapshot = await repository.snapshot(sandbox.id)
         return CommandResponse(
             scenario_id=snapshot.scenario.id,
             command_id=command_id,
         )
-
-    @app.post(
-        "/api/operator/handover",
-        response_model=CommandResponse,
-        status_code=status.HTTP_202_ACCEPTED,
-    )
-    async def handover_operator(
-        request: OperatorHandoverRequest,
-        forwarded_token: str | None = Header(default=None, alias="X-Forwarded-Access-Token"),
-        forwarded_email: str | None = Header(default=None, alias="X-Forwarded-Email"),
-        forwarded_name: str | None = Header(
-            default=None, alias="X-Forwarded-Preferred-Username"
-        ),
-    ) -> CommandResponse:
-        if not request.confirmed:
-            raise HTTPException(status_code=400, detail="Handover confirmation is required")
-        user = app_user(forwarded_email, forwarded_name)
-        runtime.cache_user_identity(user.email, forwarded_token)
-        await repository.register_user(user)
-        try:
-            scenario_id = await runtime.handover_operator(
-                request.expected_version, request.operator_email.lower(), user.email
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        return CommandResponse(scenario_id=scenario_id)
 
     @app.post(
         "/api/incidents/{incident_id}/approve",
@@ -392,9 +357,12 @@ def create_app(
     ) -> dict[str, str]:
         user = app_user(forwarded_email, forwarded_name)
         runtime.cache_user_identity(user.email, forwarded_token)
-        require_operator(await register_and_snapshot(user), user)
+        sandbox, _snapshot = await resolve_and_snapshot(user)
+        runtime.bind_operator_identity(sandbox.scenario_id, user.email)
+        if not await repository.incident(incident_id, sandbox.id):
+            raise HTTPException(status_code=404, detail="Incident not found")
         try:
-            await runtime.approve(incident_id)
+            await runtime.approve(incident_id, sandbox.id)
         except (LookupError, ValueError) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return {"status": "accepted"}
@@ -414,9 +382,12 @@ def create_app(
     ) -> dict[str, str]:
         user = app_user(forwarded_email, forwarded_name)
         runtime.cache_user_identity(user.email, forwarded_token)
-        require_operator(await register_and_snapshot(user), user)
+        sandbox, _snapshot = await resolve_and_snapshot(user)
+        runtime.bind_operator_identity(sandbox.scenario_id, user.email)
+        if not await repository.incident(incident_id, sandbox.id):
+            raise HTTPException(status_code=404, detail="Incident not found")
         try:
-            await runtime.follow_up(incident_id, request.message)
+            await runtime.follow_up(incident_id, request.message, sandbox.id)
         except LookupError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return {"status": "accepted"}
@@ -437,26 +408,17 @@ def create_app(
         cursor = max(after, int(last_event_id or 0))
         user = app_user(forwarded_email, forwarded_name)
         runtime.cache_user_identity(user.email, forwarded_token)
-        await repository.register_user(user)
+        sandbox = await repository.resolve_sandbox(user)
+        runtime.bind_operator_identity(sandbox.scenario_id, user.email)
 
         async def stream():
             nonlocal cursor
             while not await request.is_disconnected():
-                snapshot = await repository.wait_for_change(cursor, timeout=10)
+                snapshot = await repository.wait_for_change(
+                    cursor, timeout=10, sandbox_id=sandbox.id
+                )
                 if snapshot.revision > cursor:
                     cursor = snapshot.revision
-                    operator_email = (
-                        snapshot.shift_operator.operator.email
-                        if snapshot.shift_operator.operator
-                        else None
-                    )
-                    snapshot.viewer = ViewerState(
-                        email=user.email,
-                        name=user.name,
-                        is_operator=user.email == operator_email,
-                    )
-                    if snapshot.viewer.is_operator:
-                        runtime.bind_operator_identity(snapshot.scenario.id, user.email)
                     yield f"id: {cursor}\ndata: {snapshot.model_dump_json()}\n\n"
                 else:
                     yield ": keep-alive\n\n"

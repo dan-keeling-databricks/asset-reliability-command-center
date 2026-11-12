@@ -1,7 +1,11 @@
-# Databricks end-to-end execution evidence
+# Historical Kafka-build Databricks execution evidence
 
-This is the primary validator-facing proof that the Asset Reliability Command Center executed as
-an integrated build. It consolidates genuine sanitized output from the accepted run on
+> Archived evidence: every identifier and output below belongs to the accepted Kafka-based build
+> executed on 2026-10-12 UTC. It does not claim execution of the later personal-sandbox Spark Rate
+> implementation. New Rate-source evidence must be captured from its deployed commit.
+
+This is validator-facing proof that the earlier Asset Reliability Command Centre executed as an
+integrated build. It consolidates genuine sanitized output from the accepted run on
 2026-10-12 UTC. All pump records are synthetic. No OAuth credential, cookie, connection string,
 private key, or unsanitized human identity is included.
 

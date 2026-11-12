@@ -14,8 +14,34 @@ from scripts.deploy_governance import (
     _service_config_matches,
     ensure_connection,
     ensure_service,
+    ensure_user_permissions,
     probe_submit_policy,
 )
+
+
+def test_user_permissions_cover_skill_and_gateway_without_genie_data() -> None:
+    updates: list[tuple[str, str, list]] = []
+
+    class Grants:
+        def update(self, securable_type, full_name, *, changes):
+            updates.append((securable_type, full_name, changes))
+
+    applied = ensure_user_permissions(SimpleNamespace(grants=Grants()))
+
+    assert [item[:2] for item in updates] == [
+        ("CATALOG", deployment.CATALOG),
+        ("SCHEMA", f"{deployment.CATALOG}.{deployment.SCHEMA}"),
+        ("SKILL", deployment.SKILL_FQN),
+        ("MCP_SERVICE", deployment.SERVICE_FQN),
+    ]
+    assert all(item[2][0].principal == "account users" for item in updates)
+    assert [item[2][0].add[0].value for item in updates] == [
+        "USE_CATALOG",
+        "USE_SCHEMA",
+        "READ_VOLUME",
+        "EXECUTE",
+    ]
+    assert len(applied) == 4
 
 
 def test_connection_drift_ignores_redacted_secret_but_detects_routing_change() -> None:
@@ -184,7 +210,7 @@ def test_service_patch_is_retried_until_a_fresh_get_observes_declared_config() -
 
 
 @pytest.mark.asyncio
-async def test_policy_probe_discovers_exact_tools_then_authenticates_source_then_gets_ask(
+async def test_policy_probe_discovers_tools_rejects_unscoped_source_then_gets_ask(
     monkeypatch,
 ) -> None:
     events: list[str] = []
@@ -203,7 +229,7 @@ async def test_policy_probe_discovers_exact_tools_then_authenticates_source_then
             events.append(name)
             if name == "get_asset_telemetry":
                 assert arguments == {"asset_id": "P-204"}
-                return {"result": {"isError": False, "structuredContent": {"asset_id": "P-204"}}}
+                raise RuntimeError("Missing internal agent run context")
             raise GatewayAsk(
                 '{"method":"tools/call"}',
                 GatewayElicitation("ask-1", "https://example.test/ask", "Approval required"),
@@ -225,7 +251,7 @@ async def test_policy_probe_discovers_exact_tools_then_authenticates_source_then
     assert events == ["list", "get_asset_telemetry", "submit_work_order", "close"]
     assert result == {
         "tools": TOOLS,
-        "source_authentication": "verified",
+        "source_context_guard": "verified",
         "decision": "ASK",
         "elicitation_id": "ask-1",
         "execution": "not executed",

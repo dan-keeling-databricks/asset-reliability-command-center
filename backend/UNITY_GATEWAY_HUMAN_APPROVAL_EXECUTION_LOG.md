@@ -1,5 +1,8 @@
 # Unity Gateway human-in-the-loop approval execution log
 
+> Historical Kafka-build record from 2026-10-12; this does not claim execution by the later
+> personal-sandbox Spark Rate deployment.
+
 This is the executed governance boundary for P-204 incident
 `13c50285-aba5-444c-b5b6-bba810f2a452`.
 

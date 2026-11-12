@@ -1,7 +1,6 @@
 import { FormEvent, ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { GenieDrawer } from "./GenieDrawer";
 import type {
   AlertSummary,
   DashboardSnapshot,
@@ -127,12 +126,12 @@ function conversationItemId(item: ConversationItem) {
 
 type LatencyMetrics = Pick<
   DashboardSnapshot["platform"],
-  "kafka_to_lakebase_latency_ms" | "lakebase_to_ui_latency_ms" | "end_to_end_latency_ms"
+  "source_to_lakebase_latency_ms" | "lakebase_to_ui_latency_ms" | "end_to_end_latency_ms"
 >;
 
 function latencyMetrics(snapshot: DashboardSnapshot): LatencyMetrics {
   return {
-    kafka_to_lakebase_latency_ms: snapshot.platform.kafka_to_lakebase_latency_ms,
+    source_to_lakebase_latency_ms: snapshot.platform.source_to_lakebase_latency_ms,
     lakebase_to_ui_latency_ms: snapshot.platform.lakebase_to_ui_latency_ms,
     end_to_end_latency_ms: snapshot.platform.end_to_end_latency_ms
   };
@@ -149,13 +148,11 @@ function App() {
   const [activeView, setActiveView] = useState<"fleet" | "history" | "architecture">("fleet");
   const [incidentView, setIncidentView] = useState<"conversation" | "timeline" | "cost">("conversation");
   const [menuOpen, setMenuOpen] = useState(false);
-  const [genieOpen, setGenieOpen] = useState(false);
   const [followUp, setFollowUp] = useState("");
   const [followUpPending, setFollowUpPending] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [liveUpdateWarning, setLiveUpdateWarning] = useState(false);
-  const [selectedOperator, setSelectedOperator] = useState("");
   const [displayedLatencies, setDisplayedLatencies] = useState<LatencyMetrics | null>(null);
   const [fontScale, setFontScale] = useState(() => {
     const saved = Number(localStorage.getItem("command-center-font-scale"));
@@ -192,7 +189,7 @@ function App() {
     latestLatenciesRef.current = latest;
     setDisplayedLatencies((current) => current ?? latest);
   }, [
-    snapshot?.platform.kafka_to_lakebase_latency_ms,
+    snapshot?.platform.source_to_lakebase_latency_ms,
     snapshot?.platform.lakebase_to_ui_latency_ms,
     snapshot?.platform.end_to_end_latency_ms
   ]);
@@ -310,11 +307,6 @@ function App() {
     return () => window.clearTimeout(timer);
   }, [pendingConversationIds[0]]);
 
-  useEffect(() => {
-    const operatorEmail = snapshot?.shift_operator.operator?.email;
-    if (operatorEmail) setSelectedOperator(operatorEmail);
-  }, [snapshot?.shift_operator.operator?.email]);
-
   const activeByAsset = useMemo(
     () => new Map(snapshot?.active_runs.map((run) => [run.asset_id, run]) ?? []),
     [snapshot?.active_runs]
@@ -346,7 +338,7 @@ function App() {
     try {
       await jsonRequest("/api/scenario/restart", { method: "POST" });
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Unable to restart scenario");
+      setError(caught instanceof Error ? caught.message : "Unable to restart your sandbox");
     } finally {
       setBusy(false);
     }
@@ -361,38 +353,6 @@ function App() {
       if (response.incident_id) await openIncident(response.incident_id);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Unable to trigger excursion");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handover = async () => {
-    const selected = snapshot?.shift_operator.recent_users.find(
-      (user) => user.email === selectedOperator
-    );
-    if (!snapshot || !selected) return;
-    const confirmed = window.confirm(
-      `Hand over control to ${selected.name} (${selected.email})? ` +
-      "Active reviews will be archived and a fresh scenario will start for everyone."
-    );
-    if (!confirmed) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await jsonRequest("/api/operator/handover", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          operator_email: selected.email,
-          expected_version: snapshot.shift_operator.version,
-          confirmed: true
-        })
-      });
-      setMenuOpen(false);
-      setIncident(null);
-      setSelectedIncidentId(null);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Unable to hand over control");
     } finally {
       setBusy(false);
     }
@@ -414,7 +374,7 @@ function App() {
 
   const submitFollowUp = async (event: FormEvent) => {
     event.preventDefault();
-    if (!selectedIncidentId || !followUp.trim() || !isOperator || followUpPending) return;
+    if (!selectedIncidentId || !followUp.trim() || followUpPending) return;
     setBusy(true);
     setFollowUpPending(true);
     setError(null);
@@ -438,8 +398,6 @@ function App() {
     return <div className="loading-screen"><div className="loading-mark" />Connecting to live operations…</div>;
   }
 
-  const isOperator = snapshot.viewer?.is_operator ?? false;
-  const operator = snapshot.shift_operator.operator;
   const latencies = displayedLatencies ?? latencyMetrics(snapshot);
 
   return (
@@ -448,18 +406,15 @@ function App() {
         <div className="brand-lockup"><div className="brand-glyph"><span /></div><div><p>Databricks Intelligence Platform</p><h1>Asset Reliability Command Centre</h1></div></div>
         <div className="latency-panel">
           <div className={`connection-dot connection-${snapshot.platform.connection}`} aria-label={snapshot.platform.connection} />
-          <div><span>Kafka → Lakebase</span><strong>{latencies.kafka_to_lakebase_latency_ms} ms</strong></div>
+          <div><span>{snapshot.platform.source_label}</span><strong>{latencies.source_to_lakebase_latency_ms} ms</strong></div>
           <div><span>Lakebase → UI</span><strong>{latencies.lakebase_to_ui_latency_ms} ms</strong></div>
           <div className="latency-total"><span>End to end</span><strong>{latencies.end_to_end_latency_ms} ms</strong></div>
         </div>
-        <button className="genie-launch" type="button" onClick={() => setGenieOpen(true)}><span>✦</span><div><strong>Ask fleet telemetry</strong><small>Powered by Genie</small></div></button>
         <div className="demo-menu-wrap">
           <button className="menu-button" aria-label="Open demo controls" aria-expanded={menuOpen} onClick={() => setMenuOpen(!menuOpen)}><i /><i /><i /></button>
-          {menuOpen && <div className="demo-menu"><p>Shift operator</p><div className="operator-control"><label htmlFor="shift-operator">Current control</label><select id="shift-operator" value={selectedOperator} onChange={(event) => setSelectedOperator(event.target.value)}>{snapshot.shift_operator.recent_users.map((user) => <option value={user.email} key={user.email}>{user.name} · {user.email}</option>)}</select><button onClick={() => void handover()} disabled={busy || !selectedOperator || selectedOperator === operator?.email}>Hand over control<span>Archives active reviews and starts a fresh scenario</span></button></div><p>Presentation</p><div className="text-size-control"><span>Text size</span><button aria-label="Decrease text size" onClick={() => setFontScale((value) => Math.max(100, value - 10))} disabled={fontScale === 100}>−</button><strong>{fontScale}%</strong><button aria-label="Increase text size" onClick={() => setFontScale((value) => Math.min(130, value + 10))} disabled={fontScale === 130}>+</button></div><p>Demo controls</p><button onClick={() => void trigger()} disabled={busy || !isOperator || snapshot.scenario.p204_triggered}>Trigger P-204 excursion<span>{isOperator ? "Start the governed failure scenario" : "Available to the shift operator"}</span></button><button className="menu-danger" onClick={() => void restart()} disabled={busy || !isOperator}>Clear & restart<span>{isOperator ? "Reset all scenario activity" : "Available to the shift operator"}</span></button></div>}
+          {menuOpen && <div className="demo-menu"><p>Presentation</p><div className="text-size-control"><span>Text size</span><button aria-label="Decrease text size" onClick={() => setFontScale((value) => Math.max(100, value - 10))} disabled={fontScale === 100}>−</button><strong>{fontScale}%</strong><button aria-label="Increase text size" onClick={() => setFontScale((value) => Math.min(130, value + 10))} disabled={fontScale === 130}>+</button></div><p>Personal sandbox</p><button onClick={() => void trigger()} disabled={busy || snapshot.scenario.p204_triggered}>Trigger P-204 excursion<span>Start the governed failure scenario in your sandbox</span></button><button className="menu-danger" onClick={() => void restart()} disabled={busy}>Clear & restart<span>Reset activity in your sandbox only</span></button></div>}
         </div>
       </header>
-
-      {!isOperator && operator && <div className="read-only-banner" role="status"><strong>Read-only</strong><span>{operator.name} ({operator.email}) is the current shift operator. You can hand over control from the menu.</span></div>}
 
       {error && <div className="global-error">{error}</div>}
       {liveUpdateWarning && <div className="global-error" role="status">Live updates are reconnecting</div>}
@@ -533,13 +488,12 @@ function App() {
                 })}
                 {followUpPending && <div className="follow-up-status-row"><div aria-hidden="true" /><div className="agent-active follow-up-status" role="status" aria-live="polite"><div className="agent-orbit" aria-hidden="true"><i /></div><div><strong>Follow-up in progress</strong><span>Agent is working on a response</span></div></div></div>}
               </div> : incidentView === "timeline" ? <ExecutionTimeline activities={automatedActivities(incident)} /> : <CostView incident={incident} />}
-              <form className="follow-up" onSubmit={submitFollowUp}><label htmlFor="follow-up">Ask a follow-up</label><div><input id="follow-up" value={followUp} onChange={(event) => setFollowUp(event.target.value)} placeholder={isOperator ? "Ask about evidence, risk, or the response…" : "Only the current operator can ask follow-ups"} disabled={!isOperator || busy || followUpPending} /><button disabled={!isOperator || busy || followUpPending || !followUp.trim()}>Send</button></div></form>
+              <form className="follow-up" onSubmit={submitFollowUp}><label htmlFor="follow-up">Ask a follow-up</label><div><input id="follow-up" value={followUp} onChange={(event) => setFollowUp(event.target.value)} placeholder="Ask about evidence, risk, or the response…" disabled={busy || followUpPending} /><button disabled={busy || followUpPending || !followUp.trim()}>Send</button></div></form>
             </div>
             <footer className="incident-footer"><div><span>Total tokens</span><strong>{(incident.totals.input_tokens + incident.totals.output_tokens).toLocaleString()}</strong></div><div><span>Estimated cost</span><strong>${incident.totals.estimated_cost_usd.toFixed(4)}</strong></div><div><span>Tool calls</span><strong>{incident.totals.tool_calls}</strong></div><button onClick={() => setSelectedIncidentId(null)}>Close review</button></footer>
           </>}
         </section>
       </div>}
-      <GenieDrawer open={genieOpen} onClose={() => setGenieOpen(false)} />
     </main>
   );
 }

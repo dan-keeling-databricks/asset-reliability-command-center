@@ -2,7 +2,7 @@ export type PlatformStatus = {
   connection: "connected" | "degraded" | "offline";
   source_label: string;
   latency_ms: number;
-  kafka_to_lakebase_latency_ms: number;
+  source_to_lakebase_latency_ms: number;
   lakebase_to_ui_latency_ms: number;
   end_to_end_latency_ms: number;
   last_event_at: string;
@@ -59,6 +59,14 @@ export type ActiveRun = {
 
 export type DashboardSnapshot = {
   revision: number;
+  sandbox: {
+    id: string;
+    scenario_id: string;
+    generator_slot: number;
+    owner_email: string;
+    expires_at: string;
+    version: number;
+  };
   scenario: {
     id: string;
     label: string;
@@ -70,14 +78,6 @@ export type DashboardSnapshot = {
   alerts: AlertSummary[];
   invocations: InvocationSummary[];
   active_runs: ActiveRun[];
-  shift_operator: {
-    operator?: { email: string; name: string; last_seen_at: string } | null;
-    recent_users: { email: string; name: string; last_seen_at: string }[];
-    version: number;
-    updated_at?: string | null;
-    updated_by?: string | null;
-  };
-  viewer?: { email: string; name: string; is_operator: boolean } | null;
 };
 
 export type RuntimeAction = {

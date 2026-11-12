@@ -1,4 +1,4 @@
-# Asset Reliability Command Center
+# Asset Reliability Command Centre
 
 A working Databricks prototype for a process-manufacturing reliability problem: detect pump
 bearing degradation early, autonomously assess the risk of failure before the next maintenance
@@ -41,43 +41,47 @@ breach to risk decision, pumping energy intensity, and agent cost per completed 
 public figures above establish the size of the industry problem; they are not claimed results of
 this prototype.
 
-The repository implements one integrated data and AI journey:
+The deployed synthetic demo implements one isolated data and AI journey per authenticated user:
 
 ```text
-Synthetic pump telemetry → Kafka
-    ├─ Spark Real-Time Mode → Lakebase → Databricks App command center
-    └─ SQL Lakeflow Declarative Pipeline → Unity Catalog → Genie Agent
+One shared Spark Rate source → Spark Real-Time Mode → Lakebase sandbox slots
+    → authenticated user's personal pump estate → Databricks App command centre
 
-Command-center alert → code-defined Sonnet agent → UC Skill → Unity Gateway MCP
+Sandbox alert → code-defined Sonnet agent → UC Skill → Unity Gateway MCP
     → native ASK approval → governed work order
 ```
 
-The two Kafka consumers serve different needs. Standalone Spark Real-Time Mode writes the
-low-latency operational state used by the App into Lakebase. A continuous SQL Lakeflow
-Declarative Pipeline writes durable Bronze, Silver, and quarantine datasets into Unity Catalog
-and publishes the curated `pump_telemetry_history` view used exclusively by Genie.
+The Rate source is the demo adapter: one RTM query deterministically generates finite telemetry
+slots and writes them through the native PostgreSQL sink. Lakebase maps a leased slot to the
+authenticated user's active sandbox, applies that sandbox's excursion controls, and isolates all
+operational, agent, approval, and work-order state. The Architecture tab intentionally remains the
+production reference, where real plant telemetry would arrive through Kafka without changing the
+downstream RTM, Lakebase, App, or governance pattern.
 
 ## What is in the build
 
-- A continuous synthetic eight-pump producer on classic compute.
-- Standalone Kafka-to-Lakebase Spark Real-Time Mode ingestion.
-- A documented SQL Lakeflow Declarative Pipeline with data-quality expectations and quarantine.
+- One shared Spark Rate source producing eight pumps for each of 32 initial sandbox slots.
+- Standalone Rate-to-Lakebase Spark Real-Time Mode ingestion with deterministic replay keys.
+- Server-resolved personal sandboxes with no shared operator or cross-user control path.
+- A retained, inactive Kafka/Lakeflow implementation as the production-reference path.
 - Unity Catalog tables, view, lineage, comments, a governed Skill, MCP service, and policy.
 - Lakebase operational state, command, incident, agent, approval, and audit records.
 - A code-defined autonomous agent using only `databricks-claude-sonnet-4-5`.
 - Unity Gateway tool discovery and native `ASK` immediately before work-order submission.
 - A React/FastAPI Databricks App with live fleet state, incident review, and agent activity.
-- An OBO **Fleet telemetry analyst** drawer backed by a telemetry-only Genie Agent.
-- Recoverable command leases, restart isolation, single-flight approval replay, immutable
+- Retained Lakeflow/Genie assets for the production-reference path, not exposed in the personal
+  sandbox UI.
+- Slot leases, sandbox-scoped restart isolation, single-flight approval replay, immutable
   governance receipts, concurrency-safe timeline ordering, and end-to-end freshness health.
 
 All operational data is synthetic. No customer data belongs in this repository.
 
-## Working build: committed execution evidence
+## Historical Kafka-build execution evidence
 
-The following outputs came from the integrated deployment in the target Databricks workspace on
-2026-10-12. They are reproduced here so a text-only validator can confirm execution without
-following a directory link. The deployed App reported source commit
+The following dated archive came from the earlier Kafka-based integrated deployment in the target
+Databricks workspace on 2026-10-12. It proves that build only; it is not evidence for the current
+Rate-source implementation. The outputs remain reproduced here so a text-only validator can
+inspect the prior governed journey without following a directory link. The deployed App reported source commit
 `940c383fa91f9bd98f5ca0994d370b820396e582`; later repository commits add only documentation and
 sanitized evidence.
 
@@ -176,8 +180,8 @@ npm --prefix frontend ci
 ./scripts/dev.sh
 ```
 
-Open `http://127.0.0.1:5173`. `APP_ADAPTER=local` provides a deterministic command-center
-fixture without Kafka, Lakebase, model serving, or Unity Gateway. Genie is intentionally a
+Open `http://127.0.0.1:5173`. `APP_ADAPTER=local` provides a deterministic command-centre
+fixture without Spark, Lakebase, model serving, or Unity Gateway. Genie is intentionally a
 deployed OBO integration and is unavailable without a configured Genie space and forwarded
 Databricks user token.
 
@@ -192,7 +196,7 @@ uv run python scripts/deploy.py \
   --profile fe_vm_rtm \
   --target dev \
   --expected-host https://fevm-classic-stable-realtime-demos.cloud.databricks.com \
-  --access-group asset-reliability-command-center-operator \
+  --access-group users \
   --catalog classic_stable_realtime_demos_catalog \
   --schema asset_reliability_command_center \
   --app-name asset-reliability-center

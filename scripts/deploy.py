@@ -7,7 +7,9 @@ reconciles bundle and governance resources and restarts continuous workloads.  `
 instead updates only the staged Databricks App snapshot for changes contained within the App
 runtime boundary.
 
-Remote mutations are disabled unless ``--execute`` is supplied.  No credential or generated
+For a complete deployment, the data-plane phase migrates Lakebase, pauses and stops obsolete
+Kafka workloads, and starts the shared Spark Rate RTM job before the App snapshot is created.
+Remote mutations are disabled unless ``--execute`` is supplied. No credential or generated
 secret is read, printed, or written by this script; Databricks CLI authentication is selected
 only through the required explicit profile.
 """
@@ -139,7 +141,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--access-group",
         required=True,
-        help="Existing group receiving curated telemetry and Genie access.",
+        help="Existing workspace group admitted to the App without assigning a product role.",
     )
     parser.add_argument("--catalog", required=True, help="Project Unity Catalog catalog.")
     parser.add_argument("--schema", required=True, help="Project Unity Catalog schema.")
@@ -166,7 +168,7 @@ def parse_args() -> argparse.Namespace:
         "--table-timeout-seconds",
         type=int,
         default=600,
-        help="Maximum wait for the pipeline to publish the curated view.",
+        help="Maximum wait for obsolete jobs to stop and Rate RTM to reach RUNNING.",
     )
     return parser.parse_args()
 
@@ -430,7 +432,7 @@ def deployment_steps(
 
     flags = inputs.bundle_flags
     app_step = Step(
-        "Deploy the App snapshot after Genie and telemetry are ready",
+        "Deploy the App snapshot after Rate telemetry is ready",
         ["databricks", "apps", "deploy", *flags, "--auto-approve"],
     )
     if app_only:
@@ -472,7 +474,7 @@ def deployment_steps(
 
     return [
         Step(
-            "Deploy the governed data plane in readiness-gated phases",
+            "Deploy the personal-sandbox Rate data plane in readiness-gated phases",
             [
                 "uv",
                 "run",
@@ -562,16 +564,6 @@ def verify_live_resources(
     )
     if not app_only:
         runner.run(["databricks", "bundle", "summary", *inputs.bundle_flags])
-        runner.run(
-            [
-                "databricks",
-                "tables",
-                "get",
-                f"{inputs.catalog}.{inputs.schema}.pump_telemetry_history",
-                "--profile",
-                inputs.profile,
-            ]
-        )
     scope = "App-only deployment" if app_only else "Complete deployment"
     print(
         f"{scope} completed for commit {commit}. Finish the authenticated App and "

@@ -1,4 +1,7 @@
-# Validator execution evidence
+# Historical Kafka-build validator execution evidence
+
+> Archived evidence: this package proves the 2026-10-12 Kafka-based deployment only. It does not
+> claim that the later personal-sandbox Spark Rate implementation has executed.
 
 This package is a sanitized, text-readable capture from a real integrated run in the Databricks
 workspace `https://fevm-classic-stable-realtime-demos.cloud.databricks.com` on

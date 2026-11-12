@@ -11,6 +11,7 @@ import asyncio
 import hashlib
 import json
 import re
+from collections import defaultdict
 from collections.abc import Coroutine
 from datetime import datetime
 from typing import Any
@@ -32,6 +33,7 @@ from backend.models import (
 from backend.settings import Settings
 
 MCP_ACTIVITY_ACTOR = "asset_reliability_mcp"
+INTERNAL_RUN_CONTEXT = "_run_context"
 
 
 class ProductionCommandCenterRuntime:
@@ -60,10 +62,12 @@ class ProductionCommandCenterRuntime:
         self.identities = OboIdentityRegistry()
         self._user_identities = OboIdentityRegistry()
         self._evaluator_task: asyncio.Task[None] | None = None
-        self._run_tasks: set[asyncio.Task[None]] = set()
-        self._last_subject: str | None = None
-        self._identity_scenario_id: str | None = None
-        self._operator_change_lock = asyncio.Lock()
+        self._run_tasks: dict[asyncio.Task[None], str] = {}
+        self._sandbox_locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+        self._global_agent_limit = asyncio.Semaphore(settings.global_agent_concurrency)
+        self._sandbox_agent_limits: defaultdict[str, asyncio.Semaphore] = defaultdict(
+            lambda: asyncio.Semaphore(settings.per_sandbox_agent_concurrency)
+        )
 
     async def start(self) -> None:
         await self.repository.start()
@@ -83,16 +87,13 @@ class ProductionCommandCenterRuntime:
         await self.model.close()
         await self.repository.close()
 
-    def _spawn(self, operation: Coroutine[Any, Any, None]) -> None:
+    def _spawn(self, sandbox_id: str, operation: Coroutine[Any, Any, None]) -> None:
         task = asyncio.create_task(operation)
-        self._run_tasks.add(task)
-        task.add_done_callback(self._run_tasks.discard)
+        self._run_tasks[task] = sandbox_id
+        task.add_done_callback(lambda completed: self._run_tasks.pop(completed, None))
 
     def capture_identity(self, scenario_id: str, token: str | None) -> None:
-        identity = self.identities.capture(scenario_id, token)
-        if identity:
-            self._last_subject = identity.subject
-            self._identity_scenario_id = scenario_id
+        self.identities.capture(scenario_id, token)
 
     def cache_user_identity(self, user_email: str, token: str | None) -> None:
         self._user_identities.capture(user_email.lower(), token)
@@ -100,74 +101,68 @@ class ProductionCommandCenterRuntime:
     def bind_operator_identity(self, scenario_id: str, operator_email: str) -> bool:
         cached = self._user_identities.get(operator_email.lower())
         if not cached:
-            self._identity_scenario_id = None
             return False
         self.identities.capture(scenario_id, cached.token)
-        self._last_subject = cached.subject
-        self._identity_scenario_id = scenario_id
         return True
 
-    async def restart(self) -> str:
+    async def restart(self, sandbox_id: str, requested_by: str | None = None) -> str:
         """Quiesce the old scenario before atomically creating its replacement."""
 
-        async with self._operator_change_lock:
-            await self._cancel_active_runs()
-            self.identities.clear()
-            self._identity_scenario_id = None
-            return await self.repository.restart_scenario(self._last_subject)
+        async with self._sandbox_locks[sandbox_id]:
+            active = next(
+                (
+                    item
+                    for item in await self.repository.active_sandboxes()
+                    if item.id == sandbox_id
+                ),
+                None,
+            )
+            await self._cancel_active_runs(sandbox_id)
+            if active:
+                self.identities.discard(active.scenario_id)
+            return await self.repository.restart_scenario(sandbox_id, requested_by)
 
-    async def _cancel_active_runs(self) -> None:
+    async def _cancel_active_runs(self, sandbox_id: str) -> None:
         """Cancel and await every incident task so it cannot outlive its scenario."""
 
-        tasks = list(self._run_tasks)
+        tasks = [task for task, owner in self._run_tasks.items() if owner == sandbox_id]
         for task in tasks:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
-        self._run_tasks.clear()
+        for task in tasks:
+            self._run_tasks.pop(task, None)
 
-    async def trigger_excursion(self) -> str:
-        snapshot = await self.repository.snapshot()
+    async def trigger_excursion(self, sandbox_id: str) -> str:
+        snapshot = await self.repository.snapshot(sandbox_id)
         command = ScenarioCommand(
             id=str(uuid4()),
             scenario_id=snapshot.scenario.id,
+            sandbox_id=sandbox_id,
             kind="start_p204_excursion",
         )
         await self.repository.enqueue_command(command)
         return command.id
 
-    async def handover_operator(
-        self, expected_version: int, new_operator_email: str, initiated_by: str
-    ) -> str:
-        async with self._operator_change_lock:
-            scenario_id = await self.repository.handover_operator(
-                expected_version, new_operator_email, initiated_by
-            )
-            await self._cancel_active_runs()
-            self.identities.clear()
-            self._identity_scenario_id = None
-            self.bind_operator_identity(scenario_id, new_operator_email)
-            return scenario_id
-
-    async def approve(self, incident_id: str) -> None:
+    async def approve(self, incident_id: str, sandbox_id: str) -> None:
         # Approval replay is not an agent background task, so it shares the lifecycle lock
         # with restart/handover to prevent an in-flight write crossing a scenario boundary.
-        async with self._operator_change_lock:
-            incident = await self.repository.incident(incident_id)
+        async with self._sandbox_locks[sandbox_id]:
+            incident = await self.repository.incident(incident_id, sandbox_id)
             if not incident or not incident.pending_approval:
                 raise ValueError("Incident is not waiting for Gateway approval")
             identity = self.identities.get(incident.scenario_id)
             approving_subject = (
-                identity.subject if identity and identity.subject else self._last_subject
+                identity.subject if identity and identity.subject else None
             ) or "authenticated-operator"
             completed = await self._retry_pending(
-                incident_id, incident.pending_approval, approving_subject
+                incident_id, incident.pending_approval, approving_subject, sandbox_id
             )
             if not completed:
                 raise ValueError("Unity Gateway approval is still pending")
 
-    async def follow_up(self, incident_id: str, message: str) -> None:
-        incident = await self.repository.incident(incident_id)
+    async def follow_up(self, incident_id: str, message: str, sandbox_id: str) -> None:
+        incident = await self.repository.incident(incident_id, sandbox_id)
         if not incident:
             raise LookupError("Incident not found")
         await self.repository.append_conversation(incident_id, "operator", message)
@@ -221,26 +216,25 @@ class ProductionCommandCenterRuntime:
         while True:
             await asyncio.sleep(self.settings.alert_evaluator_interval_seconds)
             try:
-                await self.repository.record_component_heartbeat(
-                    "alert-evaluator", {"scenario_id": self._identity_scenario_id}
-                )
-                scenario_id = self._identity_scenario_id
-                if not scenario_id or not self.identities.get(scenario_id):
-                    continue
-                async with self._operator_change_lock:
-                    for incident_id, run_id in await self.repository.evaluate_thresholds(
-                        scenario_id
-                    ):
-                        incident = await self.repository.incident(incident_id)
-                        if not incident:
-                            continue
-                        identity = self.identities.get(incident.scenario_id)
-                        await self.repository.record_run_identity(
-                            run_id,
-                            incident.scenario_id,
-                            identity.subject if identity else None,
+                await self.repository.record_component_heartbeat("alert-evaluator")
+                for sandbox in await self.repository.active_sandboxes():
+                    identity = self.identities.get(sandbox.scenario_id)
+                    if not identity:
+                        continue
+                    async with self._sandbox_locks[sandbox.id]:
+                        created = await self.repository.evaluate_thresholds(
+                            sandbox.id, sandbox.scenario_id
                         )
-                        self._spawn(self._run_agent(incident_id))
+                        for incident_id, run_id in created:
+                            incident = await self.repository.incident(incident_id, sandbox.id)
+                            if not incident:
+                                continue
+                            await self.repository.record_run_identity(
+                                run_id,
+                                incident.scenario_id,
+                                identity.subject,
+                            )
+                            self._spawn(sandbox.id, self._run_agent(incident_id, sandbox.id))
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001
@@ -248,17 +242,24 @@ class ProductionCommandCenterRuntime:
                 # terminate autonomous monitoring.
                 continue
 
-    async def _run_agent(self, incident_id: str) -> None:
+    async def _run_agent(self, incident_id: str, sandbox_id: str) -> None:
+        """Bound global model load while keeping independent sandbox scheduling fair."""
+
+        async with self._global_agent_limit, self._sandbox_agent_limits[sandbox_id]:
+            await self._run_agent_inner(incident_id, sandbox_id)
+
+    async def _run_agent_inner(self, incident_id: str, sandbox_id: str) -> None:
         """Run the Skill-guided, dynamically tooled loop until pause or terminal state."""
 
         run_started_at = utc_now()
         try:
-            incident = await self.repository.incident(incident_id)
+            incident = await self.repository.incident(incident_id, sandbox_id)
             if not incident:
                 return
             identity = await self._wait_for_identity(incident.scenario_id)
             if not identity:
                 raise RuntimeError("No in-memory OBO identity is available for this scenario")
+            run_context = await self.repository.create_run_context(incident_id, sandbox_id)
 
             if not self.skill_gateway or not self.settings.governed_skill_tool:
                 raise RuntimeError("Governed Skill Gateway configuration is missing")
@@ -317,7 +318,9 @@ class ProductionCommandCenterRuntime:
                     "function": {
                         "name": tool["name"],
                         "description": tool.get("description", ""),
-                        "parameters": tool.get("inputSchema", {"type": "object"}),
+                        "parameters": _model_visible_schema(
+                            tool.get("inputSchema", {"type": "object"})
+                        ),
                     },
                 }
                 for tool in tools
@@ -472,6 +475,7 @@ class ProductionCommandCenterRuntime:
                                 incident_id, endpoint, messages, summary
                             )
                         await self.repository.resolve_no_action(incident_id)
+                        await self.repository.terminate_run_context(incident_id)
                         return
                     raise RuntimeError(
                         "Agent ended without resolving the incident through governed evidence"
@@ -494,7 +498,13 @@ class ProductionCommandCenterRuntime:
                         )
                     tool_started_at = utc_now()
                     try:
-                        result = await self.gateway.call_tool(tool_name, arguments, identity.token)
+                        gateway_arguments = {
+                            **arguments,
+                            INTERNAL_RUN_CONTEXT: run_context,
+                        }
+                        result = await self.gateway.call_tool(
+                            tool_name, gateway_arguments, identity.token
+                        )
                     except GatewayAsk as ask:
                         await self._pause_for_gateway(
                             incident_id,
@@ -560,6 +570,7 @@ class ProductionCommandCenterRuntime:
                 ),
             )
             await self.repository.fail_incident(incident_id, str(exc))
+            await self.repository.terminate_run_context(incident_id)
 
     async def _wait_for_identity(self, scenario_id: str) -> OboIdentity | None:
         """Allow a local hot reload's next dashboard poll to restore process-local OBO state."""
@@ -661,11 +672,15 @@ class ProductionCommandCenterRuntime:
         ) / 1_000_000
 
     async def _retry_pending(
-        self, incident_id: str, pending: PendingApproval, approving_subject: str
+        self,
+        incident_id: str,
+        pending: PendingApproval,
+        approving_subject: str,
+        sandbox_id: str,
     ) -> bool:
         """Single-flight replay of the exact paused request after Gateway authorization."""
 
-        incident = await self.repository.incident(incident_id)
+        incident = await self.repository.incident(incident_id, sandbox_id)
         if not incident or incident.status != "waiting":
             return True
         identity = self.identities.get(incident.scenario_id)
@@ -673,7 +688,7 @@ class ProductionCommandCenterRuntime:
             return False
         claimed = await self.repository.claim_pending_approval(incident_id, approving_subject)
         if not claimed:
-            latest = await self.repository.incident(incident_id)
+            latest = await self.repository.incident(incident_id, sandbox_id)
             return bool(latest and latest.status == "completed")
         pending = claimed.pending
         try:
@@ -753,6 +768,7 @@ class ProductionCommandCenterRuntime:
         )
         if persist_completion:
             await self.repository.complete_incident(incident_id, str(work_order_id))
+        await self.repository.terminate_run_context(incident_id)
 
     async def _generate_post_approval_response(
         self, incident_id: str, incident: IncidentDetail, result: dict[str, Any]
@@ -898,6 +914,17 @@ class ProductionCommandCenterRuntime:
                 "Model terminal output violated the response protocol after reformat"
             )
         return canonical
+
+
+def _model_visible_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Remove the internal sandbox capability before exposing tools to the model."""
+
+    visible = json.loads(json.dumps(schema))
+    visible.get("properties", {}).pop(INTERNAL_RUN_CONTEXT, None)
+    visible["required"] = [
+        item for item in visible.get("required", []) if item != INTERNAL_RUN_CONTEXT
+    ]
+    return visible
 
 
 def _structured(response: dict[str, Any]) -> dict[str, Any]:
