@@ -501,3 +501,21 @@ def test_current_rate_run_must_start_after_restart_request(monkeypatch) -> None:
     )
 
     assert run_payload["run_id"] == 2
+
+
+def test_active_job_runs_accepts_cli_top_level_array(monkeypatch) -> None:
+    args = Namespace(profile="explicit-profile")
+    monkeypatch.setattr(deploy_data_plane, "resource_id", lambda *_args: "123")
+    monkeypatch.setattr(
+        deploy_data_plane,
+        "run",
+        lambda command, capture: Namespace(
+            stdout=json.dumps(
+                [{"run_id": 42, "state": {"life_cycle_state": "RUNNING"}}]
+            )
+        ),
+    )
+
+    assert deploy_data_plane.active_job_runs(args, "telemetry_producer") == [
+        {"run_id": 42, "state": {"life_cycle_state": "RUNNING"}}
+    ]
