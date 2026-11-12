@@ -144,3 +144,17 @@ def test_personal_sandbox_ui_does_not_expose_genie() -> None:
     assert "<GenieDrawer" not in app_source
     assert "genieOpen" not in app_source
     assert "Ask fleet telemetry" not in app_source
+
+
+def test_incident_refreshes_are_throttled_and_coalesced() -> None:
+    """Prevent SSE revisions from creating overlapping Lakebase incident reads."""
+
+    app_source = (ROOT / "frontend/src/App.tsx").read_text()
+
+    assert "const INCIDENT_REFRESH_INTERVAL_MS = 1000;" in app_source
+    coordinator_source = (ROOT / "frontend/src/incidentRefreshCoordinator.ts").read_text()
+    assert "new IncidentRefreshCoordinator<IncidentDetail>" in app_source
+    assert "incidentRefreshCoordinatorRef.current?.request();" in app_source
+    assert "private inFlight: Promise<void> | null" in coordinator_source
+    assert "private dirty = false" in coordinator_source
+    assert "this.selection.generation === selection.generation" in coordinator_source

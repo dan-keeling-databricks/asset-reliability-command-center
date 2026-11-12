@@ -134,6 +134,14 @@ def test_frontend_freshness_rejects_source_newer_than_build(tmp_path: Path) -> N
         assert_frontend_fresh(tmp_path)
 
 
+def test_app_deployment_gate_runs_frontend_behavioural_tests() -> None:
+    """Keep concurrency regression tests in the checked manual deployment path."""
+
+    deploy_source = (Path(__file__).resolve().parents[1] / "scripts/deploy.py").read_text()
+
+    assert '["npm", "--prefix", "frontend", "run", "test:unit"]' in deploy_source
+
+
 def _write_minimal_runtime(root: Path) -> None:
     """Create only the files that a deployed FastAPI/React App reads at runtime."""
 

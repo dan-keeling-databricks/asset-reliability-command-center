@@ -410,6 +410,7 @@ def run_quality_gate(runner: Runner, inputs: DeploymentInputs) -> None:
         ["uv", "run", "ruff", "check", "backend", "tests", "src", "scripts"],
         ["uv", "run", "pytest"],
         ["npm", "--prefix", "frontend", "run", "typecheck"],
+        ["npm", "--prefix", "frontend", "run", "test:unit"],
         ["npm", "--prefix", "frontend", "run", "build"],
     ]
     for command in commands:

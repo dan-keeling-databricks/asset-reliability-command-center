@@ -1,6 +1,7 @@
 import { FormEvent, ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { IncidentRefreshCoordinator } from "./incidentRefreshCoordinator";
 import type {
   AlertSummary,
   DashboardSnapshot,
@@ -129,6 +130,8 @@ type LatencyMetrics = Pick<
   "source_to_lakebase_latency_ms" | "lakebase_to_ui_latency_ms" | "end_to_end_latency_ms"
 >;
 
+const INCIDENT_REFRESH_INTERVAL_MS = 1000;
+
 function latencyMetrics(snapshot: DashboardSnapshot): LatencyMetrics {
   return {
     source_to_lakebase_latency_ms: snapshot.platform.source_to_lakebase_latency_ms,
@@ -163,6 +166,7 @@ function App() {
   const conversationAtBottomRef = useRef(false);
   const latestLatenciesRef = useRef<LatencyMetrics | null>(null);
   const reconnectTimerRef = useRef<number | null>(null);
+  const incidentRefreshCoordinatorRef = useRef<IncidentRefreshCoordinator<IncidentDetail> | null>(null);
   const visibleConversationIdsRef = useRef(new Set<string>());
   const [visibleConversationIds, setVisibleConversationIds] = useState(new Set<string>());
   const [pendingConversationIds, setPendingConversationIds] = useState<string[]>([]);
@@ -173,9 +177,23 @@ function App() {
     ...incident.conversation.map((turn) => ({ kind: "message" as const, at: turn.created_at, turn }))
   ].sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime()) : [], [incident]);
 
-  const refreshIncident = useCallback(async (incidentId: string) => {
-    const detail = await jsonRequest<IncidentDetail>(`/api/incidents/${incidentId}`);
-    setIncident(detail);
+  if (!incidentRefreshCoordinatorRef.current) {
+    incidentRefreshCoordinatorRef.current = new IncidentRefreshCoordinator<IncidentDetail>({
+      intervalMs: INCIDENT_REFRESH_INTERVAL_MS,
+      load: (incidentId, signal) => jsonRequest<IncidentDetail>(
+        `/api/incidents/${incidentId}`,
+        { signal }
+      ),
+      onResult: setIncident,
+      onError: (caught) => {
+        setError(caught instanceof Error ? caught.message : "Unable to refresh incident");
+      }
+    });
+  }
+
+  const closeIncident = useCallback(() => {
+    incidentRefreshCoordinatorRef.current?.clear();
+    setSelectedIncidentId(null);
   }, []);
 
   useEffect(() => {
@@ -243,11 +261,11 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (!selectedIncidentId || !snapshot) return;
-    void refreshIncident(selectedIncidentId).catch((caught) => {
-      setError(caught instanceof Error ? caught.message : "Unable to refresh incident");
-    });
-  }, [refreshIncident, selectedIncidentId, snapshot?.revision]);
+    if (!snapshot) return;
+    incidentRefreshCoordinatorRef.current?.request();
+  }, [snapshot?.revision]);
+
+  useEffect(() => () => incidentRefreshCoordinatorRef.current?.clear(), []);
 
   useEffect(() => {
     if (!incident) {
@@ -318,15 +336,12 @@ function App() {
     return snapshot.alerts.map((alert) => ({ alert, invocation: invocationByIncident.get(alert.incident_id) }));
   }, [snapshot]);
 
-  const openIncident = async (incidentId: string) => {
+  const openIncident = (incidentId: string) => {
+    incidentRefreshCoordinatorRef.current?.select(incidentId);
     setSelectedIncidentId(incidentId);
     setIncidentView("conversation");
     setIncident(null);
-    try {
-      await refreshIncident(incidentId);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Unable to open incident");
-    }
+    incidentRefreshCoordinatorRef.current?.request(true);
   };
 
   const restart = async () => {
@@ -334,7 +349,7 @@ function App() {
     setMenuOpen(false);
     setError(null);
     setIncident(null);
-    setSelectedIncidentId(null);
+    closeIncident();
     try {
       await jsonRequest("/api/scenario/restart", { method: "POST" });
     } catch (caught) {
@@ -350,7 +365,7 @@ function App() {
     setError(null);
     try {
       const response = await jsonRequest<{ incident_id?: string }>("/api/scenario/trigger-p204", { method: "POST" });
-      if (response.incident_id) await openIncident(response.incident_id);
+      if (response.incident_id) openIncident(response.incident_id);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Unable to trigger excursion");
     } finally {
@@ -364,7 +379,7 @@ function App() {
     setBusy(true);
     try {
       await jsonRequest(action.endpoint, { method: "POST" });
-      if (selectedIncidentId) await refreshIncident(selectedIncidentId);
+      if (selectedIncidentId) incidentRefreshCoordinatorRef.current?.request(true);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Action failed");
     } finally {
@@ -385,7 +400,7 @@ function App() {
         body: JSON.stringify({ message: followUp.trim() })
       });
       setFollowUp("");
-      await refreshIncident(selectedIncidentId);
+      incidentRefreshCoordinatorRef.current?.request(true);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Follow-up failed");
     } finally {
@@ -464,10 +479,10 @@ function App() {
       ) : <ArchitectureView fontScale={fontScale} />}
 
       {selectedIncidentId && <div className="overlay" role="dialog" aria-modal="true" aria-label="Incident review">
-        <div className="overlay-backdrop" onClick={() => setSelectedIncidentId(null)} />
+        <div className="overlay-backdrop" onClick={closeIncident} />
         <section className="incident-review">
           {!incident ? <div className="incident-loading">Loading incident review…</div> : <>
-            <header className="incident-header"><div><p>Incident review · {incident.asset_id}</p><h2>{incident.title}</h2></div><div className="view-toggle"><button className={incidentView === "conversation" ? "active" : ""} onClick={() => setIncidentView("conversation")}>Conversation</button><button className={incidentView === "timeline" ? "active" : ""} onClick={() => setIncidentView("timeline")}>Execution timeline</button><button className={incidentView === "cost" ? "active" : ""} onClick={() => setIncidentView("cost")}>Cost</button></div><StatusPill status={incident.status} label={incident.status_label} /><button className="close-button" onClick={() => setSelectedIncidentId(null)} aria-label="Close incident review">×</button></header>
+            <header className="incident-header"><div><p>Incident review · {incident.asset_id}</p><h2>{incident.title}</h2></div><div className="view-toggle"><button className={incidentView === "conversation" ? "active" : ""} onClick={() => setIncidentView("conversation")}>Conversation</button><button className={incidentView === "timeline" ? "active" : ""} onClick={() => setIncidentView("timeline")}>Execution timeline</button><button className={incidentView === "cost" ? "active" : ""} onClick={() => setIncidentView("cost")}>Cost</button></div><StatusPill status={incident.status} label={incident.status_label} /><button className="close-button" onClick={closeIncident} aria-label="Close incident review">×</button></header>
             <div className="incident-workspace">
               <section className="initiating-prompt"><div className="prompt-icon">↗</div><div><strong>Initiating prompt</strong><p>{incident.trigger_prompt}</p></div></section>
               {incidentView === "conversation" ? <div className="unified-conversation" ref={conversationRef} onScroll={(event) => {
@@ -490,7 +505,7 @@ function App() {
               </div> : incidentView === "timeline" ? <ExecutionTimeline activities={automatedActivities(incident)} /> : <CostView incident={incident} />}
               <form className="follow-up" onSubmit={submitFollowUp}><label htmlFor="follow-up">Ask a follow-up</label><div><input id="follow-up" value={followUp} onChange={(event) => setFollowUp(event.target.value)} placeholder="Ask about evidence, risk, or the response…" disabled={busy || followUpPending} /><button disabled={busy || followUpPending || !followUp.trim()}>Send</button></div></form>
             </div>
-            <footer className="incident-footer"><div><span>Total tokens</span><strong>{(incident.totals.input_tokens + incident.totals.output_tokens).toLocaleString()}</strong></div><div><span>Estimated cost</span><strong>${incident.totals.estimated_cost_usd.toFixed(4)}</strong></div><div><span>Tool calls</span><strong>{incident.totals.tool_calls}</strong></div><button onClick={() => setSelectedIncidentId(null)}>Close review</button></footer>
+            <footer className="incident-footer"><div><span>Total tokens</span><strong>{(incident.totals.input_tokens + incident.totals.output_tokens).toLocaleString()}</strong></div><div><span>Estimated cost</span><strong>${incident.totals.estimated_cost_usd.toFixed(4)}</strong></div><div><span>Tool calls</span><strong>{incident.totals.tool_calls}</strong></div><button onClick={closeIncident}>Close review</button></footer>
           </>}
         </section>
       </div>}
