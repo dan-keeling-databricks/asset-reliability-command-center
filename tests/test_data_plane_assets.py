@@ -198,6 +198,27 @@ def test_rate_rtm_is_the_only_active_synthetic_source() -> None:
     assert "kafka_topic" not in active_job
 
 
+def test_rate_rtm_notebook_markdown_and_python_cells_are_well_formed() -> None:
+    source = RATE_RTM.read_text()
+    cells = source.split("# COMMAND ----------")
+
+    assert cells[0].startswith("# Databricks notebook source\n# MAGIC %md\n")
+    for index, raw_cell in enumerate(cells):
+        cell = raw_cell.removeprefix("# Databricks notebook source\n")
+        nonblank_lines = [line for line in cell.splitlines() if line.strip()]
+        if not nonblank_lines:
+            continue
+        if any(line.startswith("# MAGIC %md") for line in nonblank_lines):
+            assert nonblank_lines[0].startswith("# MAGIC %md"), (
+                f"Markdown cell {index} must begin with %md"
+            )
+            assert all(line.startswith("# MAGIC") for line in nonblank_lines), (
+                f"Markdown cell {index} contains unprefixed content"
+            )
+            continue
+        compile(cell, str(RATE_RTM), "exec")
+
+
 def test_app_admission_uses_broad_group_without_product_roles() -> None:
     bundle = (ROOT / "databricks.yml").read_text()
     app_resource = bundle.split("    command_center:", maxsplit=1)[1].split(

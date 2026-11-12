@@ -1,5 +1,4 @@
 # Databricks notebook source
-# ruff: noqa: F821
 # MAGIC %md
 # MAGIC # Spark Rate-to-Lakebase Real-Time Mode ingestion
 # MAGIC
@@ -22,6 +21,7 @@
 
 # COMMAND ----------
 
+# ruff: noqa: F821
 """Generate deterministic personal-sandbox telemetry with Spark Rate and RTM."""
 
 from __future__ import annotations
