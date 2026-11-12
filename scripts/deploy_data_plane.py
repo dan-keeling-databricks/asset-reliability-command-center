@@ -255,21 +255,26 @@ def active_job_runs(args: argparse.Namespace, resource_key: str) -> list[dict[st
     """Return active runs for one deployed bundle job."""
 
     job_id = resource_id(args, "jobs", resource_key)
-    payload = run_json(
-        workspace_command(
-            args,
-            "jobs",
-            "list-runs",
-            "--job-id",
-            job_id,
-            "--active-only",
-            "--limit",
-            "25",
-            "--output",
-            "json",
-        )
+    command = workspace_command(
+        args,
+        "jobs",
+        "list-runs",
+        "--job-id",
+        job_id,
+        "--active-only",
+        "--limit",
+        "25",
+        "--output",
+        "json",
     )
-    runs = payload.get("runs", [])
+    payload = json.loads(run(command, capture=True).stdout)
+    # Databricks CLI 1.17 emits a top-level array. Older clients wrapped it in ``{"runs": [...]}``.
+    if isinstance(payload, list):
+        runs = payload
+    elif isinstance(payload, dict):
+        runs = payload.get("runs", [])
+    else:
+        raise RuntimeError(f"Unexpected list-runs response for bundle job {resource_key}")
     if not isinstance(runs, list):
         raise RuntimeError(f"Unexpected active-run response for bundle job {resource_key}")
     return [run_payload for run_payload in runs if isinstance(run_payload, dict)]
