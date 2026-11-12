@@ -32,7 +32,7 @@ def test_root_readme_contains_literal_execution_results() -> None:
 
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     for literal in (
-        "Working build: committed execution evidence",
+        "Historical Kafka-build execution evidence",
         "telemetry_bronze       3,884,768",
         "P-204 | 7.6",
         "Failure risk 96% (high)",

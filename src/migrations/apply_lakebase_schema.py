@@ -32,20 +32,37 @@ dbutils.widgets.text(
 )
 dbutils.widgets.text("lakebase_database", "databricks_postgres")
 dbutils.widgets.text("lakebase_schema", "asset_reliability")
+dbutils.widgets.text("sandbox_capacity", "32")
 
 LAKEBASE_ENDPOINT = dbutils.widgets.get("lakebase_endpoint")
 LAKEBASE_DATABASE = dbutils.widgets.get("lakebase_database")
 LAKEBASE_SCHEMA = dbutils.widgets.get("lakebase_schema")
+SANDBOX_CAPACITY = int(dbutils.widgets.get("sandbox_capacity"))
 REQUIRED_COLUMNS = {
     ("scenario_commands", "lease_expires_at"),
     ("scenario_commands", "claim_version"),
     ("scenario_commands", "attempt_count"),
     ("agent_runs", "approval_claim_id"),
     ("agent_runs", "approval_claim_version"),
+    ("scenario_runs", "sandbox_id"),
+    ("telemetry_events", "sandbox_id"),
+    ("telemetry_events", "generator_slot"),
+    ("incidents", "sandbox_id"),
+    ("agent_runs", "sandbox_id"),
+    ("work_orders", "sandbox_id"),
+    ("component_heartbeats", "sandbox_id"),
+}
+REQUIRED_TABLES = {
+    "sandboxes",
+    "sandbox_slots",
+    "sandbox_controls",
+    "agent_run_contexts",
 }
 
 if not re.fullmatch(r"[a-z_][a-z0-9_]*", LAKEBASE_SCHEMA):
     raise ValueError("lakebase_schema must be a simple PostgreSQL identifier")
+if SANDBOX_CAPACITY <= 0:
+    raise ValueError("sandbox_capacity must be positive")
 
 
 def lakebase_connection() -> psycopg.Connection[Any]:
@@ -81,6 +98,14 @@ def migration_sql() -> str:
         workspace_path = Path("/Workspace") / str(workspace_path).lstrip("/")
     path = workspace_path.parents[2] / "sql" / "lakebase_schema.sql"
     migration = path.read_text(encoding="utf-8")
+    capacity_seed = "SELECT generate_series(0, 31)"
+    if capacity_seed not in migration:
+        raise RuntimeError("Lakebase migration is missing the sandbox-slot capacity seed")
+    migration = migration.replace(
+        capacity_seed,
+        f"SELECT generate_series(0, {SANDBOX_CAPACITY - 1})",
+        1,
+    )
     if LAKEBASE_SCHEMA != "asset_reliability":
         migration = migration.replace("asset_reliability", LAKEBASE_SCHEMA)
     return migration
@@ -97,10 +122,20 @@ def verify_schema(connection: psycopg.Connection[Any]) -> list[str]:
             (LAKEBASE_SCHEMA,),
         )
         actual = {(str(row[0]), str(row[1])) for row in cursor.fetchall()}
+        cursor.execute(
+            "SELECT table_name FROM information_schema.tables WHERE table_schema = %s",
+            (LAKEBASE_SCHEMA,),
+        )
+        actual_tables = {str(row[0]) for row in cursor.fetchall()}
     missing = sorted(REQUIRED_COLUMNS - actual)
-    if missing:
+    missing_tables = sorted(REQUIRED_TABLES - actual_tables)
+    if missing or missing_tables:
         names = ", ".join(f"{table}.{column}" for table, column in missing)
-        raise RuntimeError(f"Lakebase migration completed without required columns: {names}")
+        tables = ", ".join(missing_tables)
+        raise RuntimeError(
+            "Lakebase migration completed without required contract: "
+            f"columns=[{names}], tables=[{tables}]"
+        )
     return sorted(f"{table}.{column}" for table, column in REQUIRED_COLUMNS)
 
 # COMMAND ----------
@@ -124,6 +159,7 @@ print(
         {
             "migration": "lakebase_schema.sql",
             "schema": LAKEBASE_SCHEMA,
+            "sandbox_capacity": SANDBOX_CAPACITY,
             "status": "verified",
             "required_columns": verified_columns,
         },

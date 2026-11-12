@@ -232,6 +232,7 @@ resources:
               lakebase_endpoint: ${var.lakebase_endpoint_path}
               lakebase_database: databricks_postgres
               lakebase_schema: ${var.lakebase_schema}
+              sandbox_capacity: ${var.sandbox_capacity}
           libraries:
             - pypi:
                 package: databricks-sdk==0.142.0

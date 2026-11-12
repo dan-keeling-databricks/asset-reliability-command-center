@@ -223,7 +223,11 @@ def test_lakebase_migration_runs_as_app_sp_and_verifies_runtime_contract() -> No
     assert "service_principal_name: ${var.app_service_principal_client_id}" in migration_resource
     assert "notebook_path: ./src/migrations/apply_lakebase_schema.py" in migration_resource
     assert "lakebase_schema: ${var.lakebase_schema}" in migration_resource
+    assert "sandbox_capacity: ${var.sandbox_capacity}" in migration_resource
     assert 'workspace_path.parents[2] / "sql" / "lakebase_schema.sql"' in source
+    assert 'dbutils.widgets.text("sandbox_capacity", "32")' in source
+    assert "REQUIRED_TABLES" in source
+    assert '"agent_run_contexts"' in source
     assert "generate_database_credential" in source
     assert "information_schema.columns" in source
     for required_column in (

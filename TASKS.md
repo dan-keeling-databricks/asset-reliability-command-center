@@ -8,9 +8,9 @@ existing `classic_stable_realtime_demos_catalog` and dedicated
 
 | Domain | Capability | Status |
 | --- | --- | --- |
-| Source | One shared Spark Rate source with deterministic telemetry for finite sandbox slots | In implementation |
-| Operational ingestion | Rate-to-Lakebase standalone Spark Real-Time Mode on dedicated classic compute | In implementation |
-| Isolation | Server-resolved personal sandbox, scenario and controls for every authenticated user | In implementation |
+| Source | One shared Spark Rate source with deterministic telemetry for finite sandbox slots | Complete |
+| Operational ingestion | Rate-to-Lakebase standalone Spark Real-Time Mode on dedicated classic compute | Complete |
+| Isolation | Server-resolved personal sandbox, scenario and controls for every authenticated user | Complete |
 | Production reference | Retained Kafka and governed-history assets, inactive in the synthetic demo | Complete |
 | Lakebase | Live telemetry, current state, commands, incidents, runs, activities, work orders, identities, and heartbeats | Complete |
 | Lakebase | Concurrency-safe ordering, approval replay lease, and immutable governance receipts | Complete |
@@ -19,11 +19,10 @@ existing `classic_stable_realtime_demos_catalog` and dedicated
 | Governance | One configured MCP service with runtime `tools/list` discovery | Complete |
 | Governance | Source MCP restricted to the App service principal | Complete |
 | Governance | Reconciled selectors and native `ASK` policy with non-executing probe | Complete |
-| Governance | Sandbox-scoped MCP context, restart isolation and single-flight exact-request replay | In implementation |
-| Genie | Reproducible telemetry-only Fleet telemetry analyst definition | Complete |
-| Genie | OBO Conversation API adapter and App drawer with SQL/results/trust states | Complete |
-| App | Personal live fleet, alerting, autonomous activity, history and incident timeline | In implementation |
-| App | End-to-end health from connectivity, Rate RTM, telemetry and evaluator freshness | In implementation |
+| Governance | Sandbox-scoped MCP context, restart isolation and single-flight exact-request replay | Complete |
+| Production reference | Reproducible telemetry-only Genie definition and OBO adapter retained but hidden | Complete |
+| App | Personal live fleet, alerting, autonomous activity, history and incident timeline | Complete |
+| App | End-to-end health from connectivity, Rate RTM, telemetry and evaluator freshness | Complete |
 | Deployment | Checked manual deployment entry point and build provenance generation | Complete |
 | Documentation | Architecture, demo, deployment, debt, and evidence plan reconciled | Complete |
 

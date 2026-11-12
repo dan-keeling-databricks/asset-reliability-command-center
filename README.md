@@ -69,7 +69,8 @@ downstream RTM, Lakebase, App, or governance pattern.
 - A code-defined autonomous agent using only `databricks-claude-sonnet-4-5`.
 - Unity Gateway tool discovery and native `ASK` immediately before work-order submission.
 - A React/FastAPI Databricks App with live fleet state, incident review, and agent activity.
-- An OBO **Fleet telemetry analyst** drawer backed by a telemetry-only Genie Agent.
+- Retained Lakeflow/Genie assets for the production-reference path, not exposed in the personal
+  sandbox UI.
 - Slot leases, sandbox-scoped restart isolation, single-flight approval replay, immutable
   governance receipts, concurrency-safe timeline ordering, and end-to-end freshness health.
 
