@@ -252,16 +252,18 @@ def set_continuous_pause_status(
 
     if pause_status not in {"PAUSED", "UNPAUSED"}:
         raise ValueError(f"Unsupported continuous pause status: {pause_status}")
-    job_id = resource_id(args, "jobs", resource_key)
+    job_id = int(resource_id(args, "jobs", resource_key))
     run(
         workspace_command(
             args,
             "jobs",
             "update",
-            job_id,
             "--json",
             json.dumps(
-                {"new_settings": {"continuous": {"pause_status": pause_status}}},
+                {
+                    "job_id": job_id,
+                    "new_settings": {"continuous": {"pause_status": pause_status}},
+                },
                 sort_keys=True,
             ),
         )

@@ -580,9 +580,11 @@ def test_continuous_pause_update_uses_explicit_profile(monkeypatch) -> None:
             "databricks",
             "jobs",
             "update",
-            "123",
             "--json",
-            '{"new_settings": {"continuous": {"pause_status": "PAUSED"}}}',
+            (
+                '{"job_id": 123, "new_settings": '
+                '{"continuous": {"pause_status": "PAUSED"}}}'
+            ),
             "--profile",
             "explicit-profile",
         ]
