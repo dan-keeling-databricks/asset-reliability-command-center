@@ -27,7 +27,6 @@
 from __future__ import annotations
 
 import json
-import math
 import re
 import time
 
@@ -203,9 +202,9 @@ coordinates = (
 # MAGIC
 # MAGIC Per-pump baselines match the original eight-pump estate. Smooth load waves and
 # MAGIC deterministic pseudo-noise make every sample reproducible from slot, pump, and sequence.
-# MAGIC P-202 and P-207 retain periodic correlated load transients that cross the alert threshold
-# MAGIC and decay; P-204 degradation is intentionally absent here and is applied only by the
-# MAGIC sandbox-scoped Lakebase control trigger.
+# MAGIC The shared stream contains no repeating alert excursions. Lakebase applies the one-shot
+# MAGIC P-202/P-207 replay relative to each personal scenario and the separately controlled P-204
+# MAGIC degradation, keeping all demo controls sandbox-scoped.
 
 # COMMAND ----------
 
@@ -244,19 +243,6 @@ noise_c = F.sin(
 )
 
 
-def pulse(cycle_seconds: float, duration_seconds: float, offset_seconds: float = 0.0) -> Column:
-    """Return a repeating, smooth zero-to-one transient envelope."""
-
-    phase = F.pmod(elapsed + F.lit(offset_seconds), F.lit(cycle_seconds))
-    return F.when(
-        phase <= F.lit(duration_seconds),
-        F.pow(F.sin(F.lit(math.pi) * phase / F.lit(duration_seconds)), 2),
-    ).otherwise(F.lit(0.0))
-
-
-p202_pulse = F.when(F.col("pump_id") == "P-202", pulse(24.0, 10.0)).otherwise(0.0)
-p207_pulse = F.when(F.col("pump_id") == "P-207", pulse(26.0, 11.0, 1.0)).otherwise(0.0)
-
 telemetry = coordinates.select(
     F.concat_ws(
         "-",
@@ -276,29 +262,25 @@ telemetry = coordinates.select(
     F.round(
         flow_base
         + 2.0 * load_wave
-        + 0.7 * noise_a
-        + 18.0 * p202_pulse
-        - 15.0 * p207_pulse,
+        + 0.7 * noise_a,
         3,
     ).alias("flow_m3h"),
     F.round(
-        pressure_base + 0.08 * load_wave + 0.03 * noise_b + 0.25 * p202_pulse + 0.55 * p207_pulse,
+        pressure_base + 0.08 * load_wave + 0.03 * noise_b,
         3,
     ).alias("discharge_pressure_bar"),
     F.round(
         vibration_base
         + 0.10 * load_wave
         + 0.07 * vibration_wave
-        + 0.04 * noise_c
-        + 3.35 * p202_pulse
-        + 3.20 * p207_pulse,
+        + 0.04 * noise_c,
         3,
     ).alias("vibration_mm_s"),
     F.round(temperature_base + 0.35 * load_wave + 0.12 * noise_a, 3).alias(
         "bearing_temperature_c"
     ),
     F.round(
-        current_base + 0.5 * load_wave + 0.2 * noise_b + 5.5 * p202_pulse + 4.8 * p207_pulse,
+        current_base + 0.5 * load_wave + 0.2 * noise_b,
         3,
     ).alias("motor_current_a"),
     F.lit("spark-rate-demo").alias("source"),

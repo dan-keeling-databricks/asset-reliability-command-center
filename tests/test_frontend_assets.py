@@ -130,7 +130,9 @@ def test_personal_sandbox_ui_has_no_shared_operator_path() -> None:
     assert "is_operator" not in types
     assert ".operator-control" not in styles
     assert ".read-only-banner" not in styles
-    assert "Reset activity in your sandbox only" in app_source
+    assert "Clear history & replay" in app_source
+    assert "Replay P-202 and P-207 once in your sandbox" in app_source
+    assert 'jsonRequest("/api/scenario/restart", { method: "POST" })' in app_source
     assert "source_to_lakebase_latency_ms" in app_source
     assert "kafka_to_lakebase_latency_ms" not in app_source
 

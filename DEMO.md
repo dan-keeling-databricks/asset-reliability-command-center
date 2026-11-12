@@ -17,8 +17,8 @@ faster detection, fewer emergency repairs, and a complete audit trail from measu
    experience, and show the measured Spark-to-Lakebase, Lakebase-to-App, and
    end-to-end latency. The status is based on real freshness and component heartbeats.
 
-2. After **Clear & restart**, only your sandbox restarts. P-202 and P-207 immediately produce
-   normal transients. Each
+2. Choose **Clear history & replay**. Only your sandbox restarts, its previous activity leaves the
+   active UI, and P-202 and P-207 each produce one normal transient. Each
    threshold crossing creates a visible alert and autonomously launches an independent agent
    evaluation. The presenter does not type a prompt.
 
@@ -59,5 +59,5 @@ faster detection, fewer emergency repairs, and a complete audit trail from measu
 - The incident footer shows only total tokens, estimated cost, and tool calls.
 - Independent incidents can execute concurrently.
 - Unity Gateway is the sole approval authority.
-- **Clear & restart** cancels only that sandbox's old agent activity before creating its new
-  scenario.
+- **Clear history & replay** cancels only that sandbox's old agent activity before creating a new
+  scenario whose two normal transients run once.

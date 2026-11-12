@@ -218,8 +218,9 @@ the deployed App and record identifiers as text:
 4. Confirm the obsolete synthetic producer and governed-history pipeline runner are stopped.
 5. Authenticate as two distinct Databricks users. Record their distinct sandbox, generator-slot
    and active-scenario identifiers; neither user may see the other's incidents or history.
-6. Trigger P-204 for user A. User B must remain at baseline. Confirm P-202 and P-207 resolve
-   independently with no action in both sandboxes.
+6. Use **Clear history & replay** for user A. Confirm P-202 and P-207 each cross the threshold
+   once, resolve independently with no action, and do not recur. User B must remain unchanged.
+   Then trigger P-204 for user A; user B must remain at baseline.
 7. Confirm user A's autonomous Sonnet workflow loads the Skill, discovers the configured
    MCP service's tools, assesses high risk, and stops at native `ASK` before submission.
 8. Attempting `/mcp` as a human App user must return `403`. Gateway source access as the configured

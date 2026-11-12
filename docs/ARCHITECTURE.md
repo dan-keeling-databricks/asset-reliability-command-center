@@ -41,8 +41,9 @@ value; RTM does not run one query per user.
 
 On first access, the App derives the user from trusted Databricks identity headers and leases a
 slot under a Lakebase row lock. Lakebase maps generated rows for that slot to the user's active
-sandbox and scenario. Stable baselines and normal P-202/P-207 transients are deterministic;
-durable, sandbox-scoped Lakebase controls apply the presenter-triggered P-204 degradation. An
+sandbox and scenario. Stable baselines are deterministic; Lakebase applies P-202/P-207 normal
+transients once relative to scenario start and durable, sandbox-scoped controls apply the
+presenter-triggered P-204 degradation. An
 unallocated or expired slot produces no stored telemetry.
 
 ### 2. Operational path: Real-Time Mode to Lakebase

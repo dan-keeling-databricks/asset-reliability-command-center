@@ -196,6 +196,22 @@ def test_rate_rtm_is_the_only_active_synthetic_source() -> None:
     assert 'format("kafka")' not in source
     assert "kafka_bootstrap" not in active_job
     assert "kafka_topic" not in active_job
+    assert "p202_pulse" not in source
+    assert "p207_pulse" not in source
+    assert "def pulse(" not in source
+
+
+def test_normal_transients_are_one_shot_per_personal_scenario() -> None:
+    """Keep P-202/P-207 replay explicit instead of periodic in the shared Rate stream."""
+
+    schema = (ROOT / "sql" / "lakebase_schema.sql").read_text()
+
+    assert "scenario.started_at" in schema
+    assert "transient_seconds BETWEEN 0.0 AND 10.0" in schema
+    assert "transient_seconds >= 0.0 AND transient_phase BETWEEN 0.0 AND 11.0" in schema
+    assert "NEW.pump_id = 'P-202'" in schema
+    assert "NEW.pump_id = 'P-207'" in schema
+    assert "POWER(SIN(PI()" in schema
 
 
 def test_rate_rtm_notebook_markdown_and_python_cells_are_well_formed() -> None:

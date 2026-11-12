@@ -84,10 +84,11 @@ The RTM DataFrame produces the existing physical measurements plus:
 - `source = 'spark-rate-demo'`
 - null Kafka provenance columns retained only for backward-compatible storage
 
-Baseline values remain smooth and deterministic. P-202 and P-207 normal-transient behaviour is
-derived from sequence/time so each restarted scenario demonstrates autonomous no-action reviews.
-P-204 degradation is not decided by the UI or Spark source alone; it is activated by a durable,
-sandbox-scoped Lakebase control row.
+Baseline values remain smooth and deterministic. The shared Rate stream contains no repeating
+alert excursions. Lakebase derives the P-202 and P-207 normal-transient envelopes from active
+scenario time so initial allocation and each explicit replay demonstrate autonomous no-action
+reviews exactly once. P-204 degradation is activated separately by a durable, sandbox-scoped
+Lakebase control row.
 
 The stream continues to use the native `postgresql` sink, update mode, deterministic primary-key
 upserts, a 100 ms batch interval and an RTM trigger. Sink retries and replay must remain idempotent.
@@ -140,8 +141,9 @@ Before accepting a generated event, Lakebase must:
 2. Resolve that sandbox's active scenario.
 3. Return `NULL` for an unallocated/expired slot so no orphan telemetry is stored.
 4. Stamp `sandbox_id` and active `scenario_id` onto the row.
-5. Apply only that sandbox's active P-204 excursion curve.
-6. Preserve deterministic source event IDs and sequence fencing.
+5. Apply the active scenario's one-shot P-202/P-207 normal-transient curves.
+6. Apply only that sandbox's active P-204 excursion curve.
+7. Preserve deterministic source event IDs and sequence fencing.
 
 The existing live-state trigger then upserts `(sandbox_id, scenario_id, pump_id)` and emits a
 change notification. Telemetry events remain append-oriented; live state remains bounded.
@@ -256,7 +258,8 @@ to infer sandbox identity at the source boundary.
   source configuration.
 - Native PostgreSQL sink and UC Volume checkpoint contracts remain present.
 - Unallocated slots do not create telemetry.
-- Excursions affect only the targeted sandbox and P-204.
+- Baseline excursions run once per active scenario and affect only its P-202/P-207 telemetry.
+- The manually triggered degradation affects only the targeted sandbox and P-204.
 - MCP run context is injected after model selection and cross-sandbox context is rejected.
 - Approval replay remains exactly once under concurrent retries.
 - Frontend contains no handover/read-only operator path and retains all runtime-driven activity.

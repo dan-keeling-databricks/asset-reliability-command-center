@@ -71,7 +71,8 @@ downstream RTM, Lakebase, App, or governance pattern.
 - A React/FastAPI Databricks App with live fleet state, incident review, and agent activity.
 - Retained Lakeflow/Genie assets for the production-reference path, not exposed in the personal
   sandbox UI.
-- Slot leases, sandbox-scoped restart isolation, single-flight approval replay, immutable
+- Slot leases, one-shot scenario-relative baseline excursions, sandbox-scoped restart isolation,
+  single-flight approval replay, immutable
   governance receipts, concurrency-safe timeline ordering, and end-to-end freshness health.
 
 All operational data is synthetic. No customer data belongs in this repository.

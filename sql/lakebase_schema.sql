@@ -638,7 +638,7 @@ CREATE TABLE IF NOT EXISTS asset_reliability.agent_run_contexts (
 CREATE INDEX IF NOT EXISTS agent_run_contexts_sandbox_run_idx
     ON asset_reliability.agent_run_contexts (sandbox_id, run_id);
 
--- Resolve Rate-source slots and apply the sandbox-local excursion before the existing live-state
+-- Resolve Rate-source slots and apply sandbox-local excursions before the existing live-state
 -- trigger. Returning NULL deliberately discards telemetry for unallocated or expired slots.
 CREATE OR REPLACE FUNCTION asset_reliability.resolve_personal_sandbox_telemetry()
 RETURNS TRIGGER
@@ -647,7 +647,11 @@ AS $$
 DECLARE
     resolved_sandbox UUID;
     resolved_scenario UUID;
+    scenario_started TIMESTAMPTZ;
     excursion_started TIMESTAMPTZ;
+    transient_seconds DOUBLE PRECISION;
+    transient_phase DOUBLE PRECISION;
+    transient_envelope DOUBLE PRECISION;
 BEGIN
     IF NEW.generator_slot IS NULL THEN
         SELECT scenario.sandbox_id INTO resolved_sandbox
@@ -657,8 +661,8 @@ BEGIN
         RETURN NEW;
     END IF;
 
-    SELECT sandbox.sandbox_id, scenario.scenario_id
-      INTO resolved_sandbox, resolved_scenario
+    SELECT sandbox.sandbox_id, scenario.scenario_id, scenario.started_at
+      INTO resolved_sandbox, resolved_scenario, scenario_started
     FROM asset_reliability.sandbox_slots slot
     JOIN asset_reliability.sandboxes sandbox
       ON sandbox.sandbox_id = slot.sandbox_id
@@ -675,6 +679,30 @@ BEGIN
 
     NEW.sandbox_id := resolved_sandbox;
     NEW.scenario_id := resolved_scenario::text;
+    transient_seconds := EXTRACT(EPOCH FROM (NEW.event_time - scenario_started));
+
+    -- The two normal operating transients are tied to the active scenario rather than the
+    -- unbounded Rate sequence. They therefore cross the threshold once after initial allocation
+    -- or an explicit replay, then remain at baseline until the user starts another scenario.
+    IF NEW.pump_id = 'P-202' AND transient_seconds BETWEEN 0.0 AND 10.0 THEN
+        transient_envelope := POWER(SIN(PI() * transient_seconds / 10.0), 2);
+        NEW.flow_m3h := NEW.flow_m3h + 18.0 * transient_envelope;
+        NEW.discharge_pressure_bar :=
+            NEW.discharge_pressure_bar + 0.25 * transient_envelope;
+        NEW.vibration_mm_s := NEW.vibration_mm_s + 3.35 * transient_envelope;
+        NEW.motor_current_a := NEW.motor_current_a + 5.5 * transient_envelope;
+    ELSIF NEW.pump_id = 'P-207' THEN
+        transient_phase := transient_seconds + 1.0;
+        IF transient_seconds >= 0.0 AND transient_phase BETWEEN 0.0 AND 11.0 THEN
+            transient_envelope := POWER(SIN(PI() * transient_phase / 11.0), 2);
+            NEW.flow_m3h := NEW.flow_m3h - 15.0 * transient_envelope;
+            NEW.discharge_pressure_bar :=
+                NEW.discharge_pressure_bar + 0.55 * transient_envelope;
+            NEW.vibration_mm_s := NEW.vibration_mm_s + 3.20 * transient_envelope;
+            NEW.motor_current_a := NEW.motor_current_a + 4.8 * transient_envelope;
+        END IF;
+    END IF;
+
     IF NEW.pump_id = 'P-204' THEN
         SELECT started_at INTO excursion_started
         FROM asset_reliability.sandbox_controls
