@@ -29,6 +29,62 @@ def test_settings_default_to_one_sonnet_endpoint() -> None:
     settings = Settings(_env_file=None)
 
     assert settings.model_endpoint == "databricks-claude-sonnet-4-5"
+    assert settings.global_agent_concurrency == 20
+
+
+@pytest.mark.asyncio
+async def test_incidents_in_one_sandbox_enter_agent_runtime_concurrently() -> None:
+    runtime = ProductionCommandCenterRuntime.__new__(ProductionCommandCenterRuntime)
+    runtime._global_agent_limit = asyncio.Semaphore(20)
+    release = asyncio.Event()
+    both_started = asyncio.Event()
+    started: set[str] = set()
+
+    async def run_inner(incident_id: str, sandbox_id: str) -> None:
+        assert sandbox_id == "sandbox-1"
+        started.add(incident_id)
+        if len(started) == 2:
+            both_started.set()
+        await release.wait()
+
+    runtime._run_agent_inner = run_inner
+    first = asyncio.create_task(runtime._run_agent("incident-1", "sandbox-1"))
+    second = asyncio.create_task(runtime._run_agent("incident-2", "sandbox-1"))
+
+    await asyncio.wait_for(both_started.wait(), timeout=1)
+    assert started == {"incident-1", "incident-2"}
+
+    release.set()
+    await asyncio.gather(first, second)
+
+
+@pytest.mark.asyncio
+async def test_global_agent_limit_admits_twenty_runs_and_holds_the_twenty_first() -> None:
+    runtime = ProductionCommandCenterRuntime.__new__(ProductionCommandCenterRuntime)
+    runtime._global_agent_limit = asyncio.Semaphore(20)
+    release = asyncio.Event()
+    twenty_started = asyncio.Event()
+    started: set[str] = set()
+
+    async def run_inner(incident_id: str, _sandbox_id: str) -> None:
+        started.add(incident_id)
+        if len(started) == 20:
+            twenty_started.set()
+        await release.wait()
+
+    runtime._run_agent_inner = run_inner
+    tasks = [
+        asyncio.create_task(runtime._run_agent(f"incident-{index}", f"sandbox-{index}"))
+        for index in range(21)
+    ]
+
+    await asyncio.wait_for(twenty_started.wait(), timeout=1)
+    await asyncio.sleep(0)
+    assert len(started) == 20
+
+    release.set()
+    await asyncio.gather(*tasks)
+    assert len(started) == 21
 
 
 def test_telemetry_result_summary_names_the_returned_operating_context() -> None:

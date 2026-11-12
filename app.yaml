@@ -26,6 +26,8 @@ env:
     value: https://fevm-classic-stable-realtime-demos.cloud.databricks.com/api/2.0/fs/files/Skills/classic_stable_realtime_demos_catalog/asset_reliability_command_center/asset-reliability-response/SKILL.md
   - name: LAKEBASE_SCHEMA
     value: asset_reliability
+  - name: GLOBAL_AGENT_CONCURRENCY
+    value: "20"
   - name: SSE_COALESCE_SECONDS
     value: "0.05"
   - name: TELEMETRY_RETENTION_SECONDS

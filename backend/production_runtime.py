@@ -65,9 +65,6 @@ class ProductionCommandCenterRuntime:
         self._run_tasks: dict[asyncio.Task[None], str] = {}
         self._sandbox_locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._global_agent_limit = asyncio.Semaphore(settings.global_agent_concurrency)
-        self._sandbox_agent_limits: defaultdict[str, asyncio.Semaphore] = defaultdict(
-            lambda: asyncio.Semaphore(settings.per_sandbox_agent_concurrency)
-        )
 
     async def start(self) -> None:
         await self.repository.start()
@@ -145,8 +142,9 @@ class ProductionCommandCenterRuntime:
         return command.id
 
     async def approve(self, incident_id: str, sandbox_id: str) -> None:
-        # Approval replay is not an agent background task, so it shares the lifecycle lock
-        # with restart/handover to prevent an in-flight write crossing a scenario boundary.
+        # Serialise only the governed write/restart boundary for this sandbox. Agent
+        # investigations do not acquire this lock, so independent incidents remain concurrent
+        # and another user's sandbox is never held behind this submission.
         async with self._sandbox_locks[sandbox_id]:
             incident = await self.repository.incident(incident_id, sandbox_id)
             if not incident or not incident.pending_approval:
@@ -243,9 +241,9 @@ class ProductionCommandCenterRuntime:
                 continue
 
     async def _run_agent(self, incident_id: str, sandbox_id: str) -> None:
-        """Bound global model load while keeping independent sandbox scheduling fair."""
+        """Bound aggregate model load without serialising incidents in one sandbox."""
 
-        async with self._global_agent_limit, self._sandbox_agent_limits[sandbox_id]:
+        async with self._global_agent_limit:
             await self._run_agent_inner(incident_id, sandbox_id)
 
     async def _run_agent_inner(self, incident_id: str, sandbox_id: str) -> None:

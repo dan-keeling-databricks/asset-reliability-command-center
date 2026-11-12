@@ -14,7 +14,7 @@ existing `classic_stable_realtime_demos_catalog` and dedicated
 | Production reference | Retained Kafka and governed-history assets, inactive in the synthetic demo | Complete |
 | Lakebase | Live telemetry, current state, commands, incidents, runs, activities, work orders, identities, and heartbeats | Complete |
 | Lakebase | Concurrency-safe ordering, approval replay lease, and immutable governance receipts | Complete |
-| Autonomous AI | Alert-generated prompts and concurrent code-defined agent runs | Complete |
+| Autonomous AI | Alert-generated prompts and up to 20 concurrent code-defined agent runs, including within one sandbox | Complete |
 | Autonomous AI | Single `databricks-claude-sonnet-4-5` model for the complete workflow | Complete |
 | Governance | One configured MCP service with runtime `tools/list` discovery | Complete |
 | Governance | Source MCP restricted to the App service principal | Complete |

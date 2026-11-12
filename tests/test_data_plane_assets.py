@@ -166,6 +166,8 @@ def test_bundle_uses_classic_pipeline_native_genie_and_obo_scope() -> None:
     assert "DATABRICKS_GENIE_SPACE_ID" in app
     assert "GENIE_SOURCE_LABEL" in app
     assert "valueFrom: fleet-telemetry-genie" in app
+    assert "name: GLOBAL_AGENT_CONCURRENCY" in app
+    assert 'value: "20"' in app
     assert "dan.keeling@" not in app
 
 

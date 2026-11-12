@@ -23,8 +23,7 @@ class Settings(BaseSettings):
     telemetry_retention_interval_seconds: float = 300.0
     telemetry_retention_batch_size: int = 1_000
     sandbox_ttl_seconds: int = 7_200
-    global_agent_concurrency: int = 8
-    per_sandbox_agent_concurrency: int = 1
+    global_agent_concurrency: int = 20
     databricks_host: str | None = None
     model_endpoint: str = "databricks-claude-sonnet-4-5"
     governed_mcp_endpoint: str | None = None

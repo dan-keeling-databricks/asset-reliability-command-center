@@ -93,7 +93,9 @@ and prevents new workload source from racing an older database contract.
 
 The alert evaluator creates a machine-authored prompt containing the pump, observed threshold
 condition, timestamp, incident identifier, and maintenance objective. A background task per
-incident permits concurrent evaluations.
+incident permits concurrent evaluations, including independent incidents in the same personal
+sandbox. The App admits up to 20 agent runs at once; it does not impose a cross-sandbox queue or
+serialise the investigation phase within one sandbox.
 
 The code-defined loop uses one model—`databricks-claude-sonnet-4-5`—for action selection,
 reasoning, and final response. It loads the governed UC Skill, calls `tools/list` on the single
@@ -125,6 +127,9 @@ request and stops before source execution. Approval replay is single-flight: an 
 allows only one caller to resume the request. A successful replay creates an immutable governance
 receipt containing the elicitation identifier, request hash, approving subject, decision, and
 timestamps. Denial, repeated `ASK`, and transport errors cannot be represented as success.
+Approved submission is serialised only against other lifecycle-changing operations in the same
+sandbox. Model reasoning and read-only investigation remain concurrent, and activity in one
+user's sandbox cannot hold another user's governed submission.
 
 The deployment helper reconciles the Skill, MCP source connection, selected tools, service
 policy, and App-source permission. Its probe first requires exact tool discovery and a benign
