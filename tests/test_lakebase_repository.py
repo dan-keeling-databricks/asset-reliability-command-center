@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import psycopg
 import pytest
 
 from backend.lakebase_repository import RTM_FRESHNESS_SECONDS, LakebaseCommandCenterRepository
@@ -322,3 +323,40 @@ def test_allocator_reclaims_only_expired_slots_under_database_locks() -> None:
         source.index("async def resolve_sandbox"):source.index("async def active_sandboxes")
     ]
     assert "governance_receipts" not in allocator
+
+
+def test_sandbox_resolution_uses_foreign_key_compatible_parent_locks() -> None:
+    source = (
+        Path(__file__).resolve().parents[1] / "backend" / "lakebase_repository.py"
+    ).read_text()
+    allocator = source[
+        source.index("async def _resolve_sandbox_once"):source.index(
+            "async def active_sandboxes"
+        )
+    ]
+
+    assert "owner_email = %s FOR NO KEY UPDATE" in allocator
+    assert "AND status = 'active' FOR NO KEY UPDATE" in allocator
+    assert "owner_email = %s FOR UPDATE" not in allocator
+    assert "AND status = 'active' FOR UPDATE" not in allocator
+
+
+@pytest.mark.asyncio
+async def test_idempotent_transactions_retry_deadlock_with_bounded_backoff(
+    monkeypatch,
+) -> None:
+    repository = LakebaseCommandCenterRepository.__new__(LakebaseCommandCenterRepository)
+    sleeps = AsyncMock()
+    monkeypatch.setattr("backend.lakebase_repository.asyncio.sleep", sleeps)
+    attempts = 0
+
+    async def operation() -> str:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise psycopg.errors.DeadlockDetected("deadlock")
+        return "recovered"
+
+    assert await repository._retry_deadlock(operation) == "recovered"
+    assert attempts == 3
+    assert [call.args[0] for call in sleeps.await_args_list] == [0.05, 0.1]
