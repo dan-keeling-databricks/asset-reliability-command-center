@@ -296,12 +296,12 @@ def test_deployment_helper_migrates_stops_legacy_and_starts_rate(monkeypatch) ->
     )
     monkeypatch.setattr(
         deploy_data_plane,
-        "restart_continuous_job",
-        lambda _args, key: events.append(("restart", key)),
+        "set_continuous_pause_status",
+        lambda _args, key, status: events.append(("pause_status", key, status)),
     )
     monkeypatch.setattr(
         deploy_data_plane,
-        "stop_obsolete_continuous_job",
+        "stop_continuous_job",
         lambda _args, key: events.append(("stop", key)),
     )
     monkeypatch.setattr(
@@ -311,14 +311,16 @@ def test_deployment_helper_migrates_stops_legacy_and_starts_rate(monkeypatch) ->
     )
     monkeypatch.setattr(
         deploy_data_plane,
-        "wait_for_current_rate_run",
+        "wait_for_current_rate_task",
         lambda _args, **_kwargs: events.append(("wait_rate",))
-        or {"run_id": 123, "start_time": 456},
-    )
-    monkeypatch.setattr(
-        deploy_data_plane,
-        "active_job_runs",
-        lambda _args, _key: [],
+        or (
+            {"run_id": 123, "start_time": 456},
+            {
+                "task_key": "ingest_pump_telemetry",
+                "run_id": 124,
+                "state": {"life_cycle_state": "RUNNING"},
+            },
+        ),
     )
 
     deploy_data_plane.deploy(args)
@@ -334,7 +336,9 @@ def test_deployment_helper_migrates_stops_legacy_and_starts_rate(monkeypatch) ->
         "grant_source_read",
         "stop",
         "stop",
-        "restart",
+        "pause_status",
+        "stop",
+        "pause_status",
         "wait_rate",
     ]
     assert events[0] == (
@@ -367,7 +371,12 @@ def test_deployment_helper_migrates_stops_legacy_and_starts_rate(monkeypatch) ->
         ("stop", "telemetry_producer"),
         ("stop", "governed_telemetry_history_continuous"),
     ]
-    assert events[9:] == [("restart", "telemetry_rtm"), ("wait_rate",)]
+    assert events[9:] == [
+        ("pause_status", "telemetry_rtm", "PAUSED"),
+        ("stop", "telemetry_rtm"),
+        ("pause_status", "telemetry_rtm", "UNPAUSED"),
+        ("wait_rate",),
+    ]
 
 
 def test_migration_failure_prevents_every_continuous_restart(monkeypatch) -> None:
@@ -381,15 +390,15 @@ def test_migration_failure_prevents_every_continuous_restart(monkeypatch) -> Non
         timeout_seconds=60,
         poll_seconds=0,
     )
-    restarted: list[str] = []
+    replacements: list[str] = []
 
     monkeypatch.setattr(deploy_data_plane, "selective_deploy", lambda *_args: None)
     monkeypatch.setattr(deploy_data_plane, "verify_compute_policy_access", lambda _args: None)
     monkeypatch.setattr(deploy_data_plane, "grant_bundle_source_read", lambda _args: None)
     monkeypatch.setattr(
         deploy_data_plane,
-        "restart_continuous_job",
-        lambda _args, key: restarted.append(key),
+        "set_continuous_pause_status",
+        lambda _args, key, _status: replacements.append(key),
     )
 
     def fail_migration(command, **_kwargs):
@@ -401,7 +410,7 @@ def test_migration_failure_prevents_every_continuous_restart(monkeypatch) -> Non
 
     with pytest.raises(RuntimeError, match="migration failed"):
         deploy_data_plane.deploy(args)
-    assert restarted == []
+    assert replacements == []
 
 
 def test_bundle_source_read_is_derived_granted_and_verified(monkeypatch) -> None:
@@ -464,43 +473,74 @@ def test_bundle_source_read_is_derived_granted_and_verified(monkeypatch) -> None
     ]
 
 
-def test_current_rate_run_must_start_after_restart_request(monkeypatch) -> None:
+def test_running_parent_with_pending_rate_task_does_not_pass_readiness(monkeypatch) -> None:
     args = Namespace(
         profile="explicit-profile",
         timeout_seconds=1,
         poll_seconds=0,
     )
-    responses = iter(
-        [
-            [
-                {
-                    "run_id": 1,
-                    "start_time": 1_000,
-                    "state": {"life_cycle_state": "RUNNING"},
-                }
-            ],
-            [
-                {
-                    "run_id": 2,
-                    "start_time": 100_000,
-                    "state": {"life_cycle_state": "RUNNING"},
-                }
-            ],
-        ]
+    parent_summary = {
+        "run_id": 2,
+        "start_time": 100_000,
+        "state": {"life_cycle_state": "RUNNING"},
+    }
+    get_run_commands: list[list[str]] = []
+    get_run_responses = iter(
+        (
+            {
+                **parent_summary,
+                "tasks": [
+                    {
+                        "task_key": "ingest_pump_telemetry",
+                        "run_id": 20,
+                        "state": {
+                            "life_cycle_state": "PENDING",
+                            "state_message": "MAX_CONCURRENT_RUNS_REACHED",
+                        },
+                    }
+                ],
+            },
+            {
+                **parent_summary,
+                "tasks": [
+                    {
+                        "task_key": "ingest_pump_telemetry",
+                        "run_id": 21,
+                        "state": {"life_cycle_state": "RUNNING"},
+                    }
+                ],
+            },
+        )
     )
     monkeypatch.setattr(
         deploy_data_plane,
         "active_job_runs",
-        lambda _args, _key: next(responses),
+        lambda _args, _key: [parent_summary],
+    )
+    monkeypatch.setattr(
+        deploy_data_plane,
+        "run_json",
+        lambda command: get_run_commands.append(command) or next(get_run_responses),
     )
 
-    run_payload = deploy_data_plane.wait_for_current_rate_run(
+    parent, task = deploy_data_plane.wait_for_current_rate_task(
         args,
         restart_requested_at_ms=100_000,
-        previous_run_ids={"1"},
     )
 
-    assert run_payload["run_id"] == 2
+    assert parent["run_id"] == 2
+    assert task["run_id"] == 21
+    assert len(get_run_commands) == 2
+    assert get_run_commands[0] == [
+        "databricks",
+        "jobs",
+        "get-run",
+        "2",
+        "--output",
+        "json",
+        "--profile",
+        "explicit-profile",
+    ]
 
 
 def test_active_job_runs_accepts_cli_top_level_array(monkeypatch) -> None:
@@ -521,6 +561,36 @@ def test_active_job_runs_accepts_cli_top_level_array(monkeypatch) -> None:
     ]
 
 
+def test_continuous_pause_update_uses_explicit_profile(monkeypatch) -> None:
+    args = Namespace(profile="explicit-profile")
+    commands: list[list[str]] = []
+    monkeypatch.setattr(deploy_data_plane, "resource_id", lambda *_args: "123")
+    monkeypatch.setattr(
+        deploy_data_plane,
+        "run",
+        lambda command, **_kwargs: commands.append(command),
+    )
+
+    deploy_data_plane.set_continuous_pause_status(
+        args, deploy_data_plane.RATE_JOB_KEY, "PAUSED"
+    )
+
+    assert commands == [
+        [
+            "databricks",
+            "jobs",
+            "update",
+            "--json",
+            (
+                '{"job_id": 123, "new_settings": '
+                '{"continuous": {"pause_status": "PAUSED"}}}'
+            ),
+            "--profile",
+            "explicit-profile",
+        ]
+    ]
+
+
 def test_obsolete_continuous_job_cancels_each_parent_explicitly(monkeypatch) -> None:
     args = Namespace(profile="explicit-profile", timeout_seconds=1, poll_seconds=0)
     commands: list[list[str]] = []
@@ -537,7 +607,7 @@ def test_obsolete_continuous_job_cancels_each_parent_explicitly(monkeypatch) -> 
         lambda command, **_kwargs: commands.append(command),
     )
 
-    deploy_data_plane.stop_obsolete_continuous_job(args, "telemetry_producer")
+    deploy_data_plane.stop_continuous_job(args, "telemetry_producer")
 
     assert commands[0][1:4] == ["jobs", "cancel-all-runs", "--job-id"]
     assert commands[1][1:5] == ["jobs", "cancel-run", "42", "--no-wait"]
