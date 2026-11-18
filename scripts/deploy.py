@@ -765,8 +765,61 @@ def deployment_steps(
     ]
 
 
+def install_schema_step(inputs: DeploymentInputs) -> Step:
+    """Create the project schema before APIs that persist objects within it are called."""
+
+    return Step(
+        "Create the Unity Catalog project schema",
+        [
+            "databricks",
+            "bundle",
+            "deploy",
+            *inputs.bundle_flags,
+            "--auto-approve",
+            "--select",
+            "schemas.project_schema",
+        ],
+    )
+
+
+def wait_for_schema(
+    runner: Runner, inputs: DeploymentInputs, *, timeout_seconds: int = 180
+) -> None:
+    """Wait until the new schema is visible across workspace APIs.
+
+    Bundle deployment can return before MLflow's experiment API observes a newly created Unity
+    Catalog schema. The App depends on an experiment whose trace tables live in that schema, so a
+    read-after-write barrier prevents a partially ordered first installation.
+    """
+
+    command = [
+        "databricks",
+        "schemas",
+        "get",
+        inputs.schema_fqn,
+        "--profile",
+        inputs.profile,
+        "-o",
+        "json",
+    ]
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        try:
+            result = runner.run(command, capture=True)
+        except subprocess.CalledProcessError:
+            pass
+        else:
+            payload = json.loads(result.stdout)
+            if payload.get("full_name") == inputs.schema_fqn:
+                return
+        time.sleep(2)
+    raise TimeoutError(
+        f"Unity Catalog schema {inputs.schema_fqn} was not visible after {timeout_seconds}s"
+    )
+
+
 def install_bootstrap_step(inputs: DeploymentInputs) -> Step:
-    """Create bundle foundations, including the App and its generated workload identity."""
+    """Create the App and its generated workload identity after schema readiness."""
 
     return Step(
         "Create foundational resources and the Databricks App",
@@ -777,7 +830,7 @@ def install_bootstrap_step(inputs: DeploymentInputs) -> Step:
             *inputs.bundle_flags,
             "--auto-approve",
             "--select",
-            "schemas.project_schema,apps.command_center",
+            "apps.command_center",
         ],
     )
 
@@ -929,6 +982,10 @@ def main() -> None:
         return
 
     if operation is DeploymentOperation.INSTALL:
+        schema_bootstrap = install_schema_step(inputs)
+        print(f"\n==> {schema_bootstrap.label}")
+        runner.run(schema_bootstrap.command)
+        wait_for_schema(runner, inputs)
         bootstrap = install_bootstrap_step(inputs)
         print(f"\n==> {bootstrap.label}")
         runner.run(bootstrap.command)

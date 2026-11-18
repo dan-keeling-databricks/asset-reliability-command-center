@@ -18,6 +18,7 @@ from scripts.deploy import (
     deployment_steps,
     generated_app_environment,
     install_bootstrap_step,
+    install_schema_step,
     resolve_app_source_path,
     stage_app_source,
     write_build_info,
@@ -104,13 +105,12 @@ def test_deployment_steps_are_explicit_and_dependency_ordered() -> None:
 def test_fresh_install_bootstraps_app_before_resolving_its_identity() -> None:
     unresolved = replace(inputs(), app_service_principal_client_id=None)
 
+    schema_step = install_schema_step(unresolved)
     step = install_bootstrap_step(unresolved)
 
+    assert schema_step.command[-2:] == ["--select", "schemas.project_schema"]
     assert step.command[:3] == ["databricks", "bundle", "deploy"]
-    assert step.command[-2:] == [
-        "--select",
-        "schemas.project_schema,apps.command_center",
-    ]
+    assert step.command[-2:] == ["--select", "apps.command_center"]
     assert not any("app_service_principal_client_id" in item for item in step.command)
     assert "lakebase_branch_name=production" in step.command
     assert "lakebase_database_name=asset-reliability-db" in step.command
