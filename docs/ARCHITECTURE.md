@@ -23,11 +23,14 @@ flowchart LR
     UI <-->|HTTPS + SSE| APP[Databricks App<br/>FastAPI + agent runtime]
     APP <-->|SQL + LISTEN/NOTIFY| LB
 
-    APP -->|single model| SONNET[Claude Sonnet 4.5]
+    APP -->|LangGraph reasoning| MS[Unity Gateway Model Service]
+    MS -->|Foundation Model API| SONNET[Claude Sonnet 4.5]
     APP -->|load governed procedure| SKILL[Unity Catalog Skill]
     APP -->|OBO tools/list + tools/call| GW[Unity Gateway MCP]
     GW -->|source identity| MCP[App-hosted MCP tools]
     GW -->|native ASK| APPROVAL[Human approval]
+    APP -->|LangGraph traces| MLFLOW[MLflow experiment]
+    MLFLOW -->|UC trace tables| LH[(Lakehouse)]
 ```
 
 ## Data journey
@@ -41,9 +44,11 @@ value; RTM does not run one query per user.
 
 On first access, the App derives the user from trusted Databricks identity headers and leases a
 slot under a Lakebase row lock. Lakebase maps generated rows for that slot to the user's active
-sandbox and scenario. Stable baselines are deterministic; Lakebase applies P-202/P-207 normal
-transients once relative to scenario start and durable, sandbox-scoped controls apply the
-presenter-triggered P-204 degradation. An
+sandbox and scenario. Stable baselines are deterministic. First sandbox creation and every
+explicit reset atomically seed one P-202 startup-recirculation event and one P-207 valve-transition
+event in `normal_transient_events`. The first matching telemetry sample activates each event; ten
+seconds later it becomes completed and cannot recur in that scenario. Durable, sandbox-scoped
+controls apply the presenter-triggered P-204 degradation. An
 unallocated or expired slot produces no stored telemetry.
 
 ### 2. Operational path: Real-Time Mode to Lakebase
@@ -97,18 +102,30 @@ incident permits concurrent evaluations, including independent incidents in the 
 sandbox. The App admits up to 20 agent runs at once; it does not impose a cross-sandbox queue or
 serialise the investigation phase within one sandbox.
 
-The code-defined loop uses one model—`databricks-claude-sonnet-4-5`—for action selection,
-reasoning, and final response. It loads the governed UC Skill, calls `tools/list` on the single
-configured MCP service, and lets the model choose tools without a UI-imposed stage or call cap.
-The current discovered tools are:
+The agent is an explicit LangGraph hosted in the Databricks App. Its nodes load incident context,
+load the governed UC Skill, discover MCP tools, invoke the model, execute the selected governed
+tool, loop over returned evidence, resolve no action, or pause at a genuine Gateway `ASK`.
+Approval enters the graph through a separate resume node which derives state from Lakebase and
+replays the exact claimed request once. Lakebase—not an in-memory LangGraph checkpointer—remains
+canonical for durable approval state.
+
+Model inference uses the OpenAI-compatible Responses API exposed by a Unity Gateway Model Service.
+That governed service currently routes 100% of traffic to the
+`system.ai.databricks-claude-sonnet-4-5` Foundation Model API. The LangGraph loads the governed UC
+Skill, calls `tools/list` on the configured MCP service, and lets the model choose tools without a
+UI-imposed stage or call cap. The current discovered tools are:
 
 - `get_asset_telemetry`
 - `assess_failure_risk`
 - `prepare_work_order`
 - `submit_work_order`
 
-Every model or tool activity is persisted and rendered separately. The model reports tokens and
-estimated cost for one attributable model, supporting future cross-model benchmark work.
+Every model or tool activity is persisted and rendered separately. OBO identity and the opaque
+MCP run context remain outside traceable graph state. MLflow LangChain autologging plus one outer
+application span records graph execution to a bundle-managed experiment with Unity Catalog trace
+storage. Stable root attributes identify the real pump, incident and terminal outcome for GenAI
+evaluation. The App's Agent graph tab explicitly separates its static design view from links to
+actual MLflow evidence.
 
 ## Governance and identity boundaries
 
@@ -147,6 +164,7 @@ before any state transition or governed completion.
 | --- | --- |
 | `pumps`, `alert_rules` | Fleet metadata and threshold/hysteresis rules |
 | `sandboxes`, `sandbox_slots`, `sandbox_controls` | User ownership, generator leases and excursions |
+| `normal_transient_events` | Explicit one-shot P-202/P-207 events for first creation and reset |
 | `scenario_runs`, `scenario_commands` | Sandbox-scoped demo lifecycle |
 | `telemetry_events`, `pump_live_state` | Operational event log and bounded latest state |
 | `incidents`, `agent_runs` | Alert and autonomous-execution lifecycle |

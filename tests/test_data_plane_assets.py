@@ -146,21 +146,21 @@ def test_bundle_uses_classic_pipeline_native_genie_and_obo_scope() -> None:
     assert "fleet_telemetry_analyst:" in bundle
     assert "default: /Shared" in bundle
     assert "space_id: ${resources.genie_spaces.fleet_telemetry_analyst.id}" in bundle
-    assert bundle.count("service_principal_name: ${var.app_service_principal_client_id}") == 7
+    assert bundle.count("service_principal_name: ${var.app_service_principal_client_id}") == 8
     assert "asset_reliability_workloads:" in bundle
     assert '"minValue": 0' in bundle
     assert '"maxValue": 1' in bundle
     assert '"value": "i3.xlarge"' in bundle
     assert '"value": "ON_DEMAND"' in bundle
-    # Lakeflow Declarative Pipelines reject policies that define data_security_mode. The three
+    # Lakeflow Declarative Pipelines reject policies that define data_security_mode. The four
     # standalone job clusters still set SINGLE_USER explicitly in their resource definitions.
     assert '"data_security_mode": {' not in bundle
-    assert bundle.count("data_security_mode: SINGLE_USER") == 3
+    assert bundle.count("data_security_mode: SINGLE_USER") == 4
     assert "runtime_engine: STANDARD" in bundle
     assert "trigger_interval: 10 seconds" in bundle
     assert bundle.count(
         "policy_id: ${resources.cluster_policies.asset_reliability_workloads.id}"
-    ) == 4
+    ) == 5
     assert "- genie" in bundle
     assert "dashboards.genie" not in bundle
     assert "DATABRICKS_GENIE_SPACE_ID" in app
@@ -250,9 +250,10 @@ def test_app_admission_uses_broad_group_without_product_roles() -> None:
     assert "default: users" in bundle
     assert "level: CAN_USE" in app_resource
     assert "group_name: ${var.app_access_group}" in app_resource
-    assert "group_name: ${var.app_access_group}" not in bundle.split(
-        "  apps:", maxsplit=1
-    )[0]
+    before_apps = bundle.split("  apps:", maxsplit=1)[0]
+    assert before_apps.count("group_name: ${var.app_access_group}") == 1
+    assert "experiments:" in before_apps
+    assert "level: CAN_READ" in before_apps.split("  experiments:", maxsplit=1)[1]
 
 
 def test_lakebase_migration_runs_as_app_sp_and_verifies_runtime_contract() -> None:
@@ -375,6 +376,7 @@ def test_deployment_helper_migrates_stops_legacy_and_starts_rate(monkeypatch) ->
         "grant_source_read",
         "run",
         "run",
+        "run",
         "grant_source_read",
         "stop",
         "stop",
@@ -409,11 +411,12 @@ def test_deployment_helper_migrates_stops_legacy_and_starts_rate(monkeypatch) ->
         "schema=schema",
         "--auto-approve",
     )
-    assert events[7:9] == [
+    assert "setup_agent_observability_access" in events[6]
+    assert events[8:10] == [
         ("stop", "telemetry_producer"),
         ("stop", "governed_telemetry_history_continuous"),
     ]
-    assert events[9:] == [
+    assert events[10:] == [
         ("pause_status", "telemetry_rtm", "PAUSED"),
         ("stop", "telemetry_rtm"),
         ("pause_status", "telemetry_rtm", "UNPAUSED"),

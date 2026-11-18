@@ -47,8 +47,12 @@ The deployed synthetic demo implements one isolated data and AI journey per auth
 One shared Spark Rate source → Spark Real-Time Mode → Lakebase sandbox slots
     → authenticated user's personal pump estate → Databricks App command centre
 
-Sandbox alert → code-defined Sonnet agent → UC Skill → Unity Gateway MCP
+Sandbox alert → LangGraph agent in Databricks Apps → governed UC Skill
+    → runtime MCP discovery and governed tool execution through Unity Gateway
     → native ASK approval → governed work order
+
+LangGraph reasoning → Unity Gateway Model Service → Foundation Model API
+    → MLflow experiment, traces and GenAI evaluation
 ```
 
 The Rate source is the demo adapter: one RTM query deterministically generates finite telemetry
@@ -66,9 +70,13 @@ downstream RTM, Lakebase, App, or governance pattern.
 - A retained, inactive Kafka/Lakeflow implementation as the production-reference path.
 - Unity Catalog tables, view, lineage, comments, a governed Skill, MCP service, and policy.
 - Lakebase operational state, command, incident, agent, approval, and audit records.
-- A code-defined autonomous agent using only `databricks-claude-sonnet-4-5`.
+- A LangGraph autonomous agent hosted in Databricks Apps.
+- Foundation Model API inference routed through a Unity Gateway Model Service, currently backed by
+  `databricks-claude-sonnet-4-5`.
+- A managed MLflow experiment, Unity Catalog trace storage, and a real-trace GenAI evaluation job.
 - Unity Gateway tool discovery and native `ASK` immediately before work-order submission.
-- A React/FastAPI Databricks App with live fleet state, incident review, and agent activity.
+- A React/FastAPI Databricks App with live fleet state, incident review, agent activity, a
+  high-level LangGraph view, and links to the managed MLflow experiment and traces.
 - Retained Lakeflow/Genie assets for the production-reference path, not exposed in the personal
   sandbox UI.
 - Slot leases, one-shot scenario-relative baseline excursions, sandbox-scoped restart isolation,

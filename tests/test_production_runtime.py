@@ -1,4 +1,4 @@
-"""Agent-loop tests for tool choice, rationales, approval pause/replay, and fallbacks."""
+"""LangGraph runtime tests for tool choice, approval pause/replay, and fallbacks."""
 
 import asyncio
 from datetime import UTC, datetime
@@ -13,6 +13,7 @@ from backend.lakebase_repository import ApprovalReplayClaim
 from backend.model_client import ModelResult, ModelTurn
 from backend.models import IncidentDetail, PendingApproval
 from backend.production_runtime import (
+    AgentGraphState,
     ProductionCommandCenterRuntime,
     _canonical_decision_rationale,
     _canonical_terminal_response,
@@ -85,6 +86,62 @@ async def test_global_agent_limit_admits_twenty_runs_and_holds_the_twenty_first(
     release.set()
     await asyncio.gather(*tasks)
     assert len(started) == 21
+
+
+def test_agent_runtime_is_an_explicit_langgraph_with_approval_resume() -> None:
+    runtime = ProductionCommandCenterRuntime.__new__(ProductionCommandCenterRuntime)
+
+    graph = runtime._build_agent_graph()
+
+    assert graph.checkpointer is None
+    assert set(graph.get_graph().nodes) >= {
+        "load_context",
+        "load_skill",
+        "discover_tools",
+        "invoke_model",
+        "execute_tools",
+        "request_governed_action",
+        "resolve_no_action",
+        "resume_approval",
+    }
+    assert "identity" not in AgentGraphState.__annotations__
+    assert "run_context" not in AgentGraphState.__annotations__
+
+
+@pytest.mark.asyncio
+async def test_approval_resumes_graph_from_lakebase_pending_request() -> None:
+    pending = PendingApproval(
+        serialized_request='{"method":"tools/call"}',
+        elicitation_id="approval-1",
+        approval_url="https://example.test/approval",
+        message="Approval required",
+        tool_name="submit_work_order",
+    )
+    runtime = ProductionCommandCenterRuntime.__new__(ProductionCommandCenterRuntime)
+    runtime.repository = SimpleNamespace(
+        incident=AsyncMock(
+            return_value=SimpleNamespace(
+                status="waiting", scenario_id="scenario-1", pending_approval=pending
+            )
+        )
+    )
+    runtime.identities = OboIdentityRegistry()
+    runtime.identities.capture("scenario-1", "live-token")
+    runtime._sandbox_locks = {"sandbox-1": asyncio.Lock()}
+    runtime._agent_graph = SimpleNamespace(
+        ainvoke=AsyncMock(return_value={"phase": "completed", "replay_completed": True})
+    )
+
+    await runtime.approve("incident-1", "sandbox-1")
+
+    state = runtime._agent_graph.ainvoke.await_args.args[0]
+    assert state == {
+        "entrypoint": "approval",
+        "incident_id": "incident-1",
+        "sandbox_id": "sandbox-1",
+        "pending_approval": pending,
+        "approving_subject": "authenticated-operator",
+    }
 
 
 def test_telemetry_result_summary_names_the_returned_operating_context() -> None:

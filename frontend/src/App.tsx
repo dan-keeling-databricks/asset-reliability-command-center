@@ -1,6 +1,7 @@
 import { FormEvent, ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { AgentGraphView } from "./AgentGraphView";
 import { IncidentRefreshCoordinator } from "./incidentRefreshCoordinator";
 import type {
   AlertSummary,
@@ -148,7 +149,7 @@ function App() {
   const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(null);
   const [incident, setIncident] = useState<IncidentDetail | null>(null);
   const [selectedIncidentId, setSelectedIncidentId] = useState<string | null>(null);
-  const [activeView, setActiveView] = useState<"fleet" | "history" | "architecture">("fleet");
+  const [activeView, setActiveView] = useState<"fleet" | "history" | "architecture" | "agent">("fleet");
   const [incidentView, setIncidentView] = useState<"conversation" | "timeline" | "cost">("conversation");
   const [menuOpen, setMenuOpen] = useState(false);
   const [followUp, setFollowUp] = useState("");
@@ -438,6 +439,7 @@ function App() {
         <button className={activeView === "fleet" ? "active" : ""} onClick={() => setActiveView("fleet")}>Live fleet</button>
         <button className={activeView === "history" ? "active" : ""} onClick={() => setActiveView("history")}>History <span>{snapshot.alerts.length}</span></button>
         <button className={activeView === "architecture" ? "active" : ""} onClick={() => setActiveView("architecture")}>Architecture</button>
+        <button className={activeView === "agent" ? "active" : ""} onClick={() => setActiveView("agent")}>Agent graph</button>
       </nav>
 
       {activeView === "fleet" ? (
@@ -476,7 +478,7 @@ function App() {
             ))}
           </div>
         </section>
-      ) : <ArchitectureView fontScale={fontScale} />}
+      ) : activeView === "architecture" ? <ArchitectureView fontScale={fontScale} /> : <AgentGraphView />}
 
       {selectedIncidentId && <div className="overlay" role="dialog" aria-modal="true" aria-label="Incident review">
         <div className="overlay-backdrop" onClick={closeIncident} />

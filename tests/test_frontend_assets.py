@@ -160,3 +160,37 @@ def test_incident_refreshes_are_throttled_and_coalesced() -> None:
     assert "private inFlight: Promise<void> | null" in coordinator_source
     assert "private dirty = false" in coordinator_source
     assert "this.selection.generation === selection.generation" in coordinator_source
+
+
+def test_agent_graph_tab_separates_design_from_live_mlflow_evidence() -> None:
+    """Keep static LangGraph design distinct from verified runtime evidence links."""
+
+    app_source = (ROOT / "frontend/src/App.tsx").read_text()
+    graph_source = (ROOT / "frontend/src/AgentGraphView.tsx").read_text()
+    styles = (ROOT / "frontend/src/styles.css").read_text()
+
+    assert '>Agent graph</button>' in app_source
+    assert '<AgentGraphView />' in app_source
+    assert 'fetch("/api/agent-observability"' in graph_source
+    assert "Static architecture" in graph_source
+    assert "Design view · not a live execution trace" in graph_source
+    assert "MCP runtime discovery" in graph_source
+    assert "LangGraph model reasoning" in graph_source
+    assert "Unity Gateway Model Service" in graph_source
+    assert "Foundation Model API" in graph_source
+    assert "Governed MCP tool execution" in graph_source
+    assert "Native Gateway ASK" in graph_source
+    assert "Human approval and exact replay" in graph_source
+    assert "Complete / no action" in graph_source
+    assert "MLflow evidence persistence" in graph_source
+    assert "Live runtime evidence" in graph_source
+    assert "Links returned by the deployed App" in graph_source
+    assert "Open MLflow experiment" in graph_source
+    assert "View MLflow traces" in graph_source
+    assert "Partial runtime evidence" in graph_source
+    assert 'role="alert"' in graph_source
+    assert 'target="_blank" rel="noopener noreferrer"' in graph_source
+    assert "dummy" not in graph_source.lower()
+    assert "placeholder" not in graph_source.lower()
+    assert ".agent-graph-heading h2" in styles
+    assert "font-size: calc(20px * var(--font-scale))" in styles

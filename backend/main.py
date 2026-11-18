@@ -31,6 +31,8 @@ from backend.models import (
     FollowUpRequest,
     SandboxState,
 )
+from backend.observability import AgentObservability, configure_mlflow_tracing
+from backend.observability import agent_observability as observability_configuration
 from backend.production_runtime import ProductionCommandCenterRuntime
 from backend.repository import CommandCenterRepository, LocalCommandCenterRepository
 from backend.runtime import (
@@ -167,8 +169,12 @@ def create_app(
         else:
             runtime = LocalCommandCenterRuntime(repository, settings)
 
+    observability: AgentObservability | None = None
+
     @asynccontextmanager
     async def lifespan(application: FastAPI):
+        nonlocal observability
+        observability = configure_mlflow_tracing(settings)
         await runtime.start()
         application.state.runtime = runtime
         try:
@@ -246,6 +252,11 @@ def create_app(
                 else "Lakebase ready · no active personal sandboxes"
             ),
         }
+
+    @app.get("/api/agent-observability")
+    async def agent_observability() -> dict[str, str | None]:
+        current = observability or observability_configuration(settings)
+        return current.as_dict()
 
     @app.get("/api/build-info")
     async def build_info() -> dict[str, str]:

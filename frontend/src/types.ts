@@ -80,6 +80,15 @@ export type DashboardSnapshot = {
   active_runs: ActiveRun[];
 };
 
+export type AgentObservability = {
+  framework: "LangGraph" | string;
+  experiment_id: string | null;
+  experiment_url: string | null;
+  traces_url: string | null;
+  status: "configured" | "unavailable";
+  detail: string | null;
+};
+
 export type RuntimeAction = {
   label: string;
   kind: string;
