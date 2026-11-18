@@ -9,19 +9,19 @@ type EvidenceState =
 const GRAPH_STAGES = [
   {
     label: "Incident context",
-    detail: "Telemetry, threshold evidence and the maintenance objective enter one run."
+    detail: "Telemetry, threshold evidence and the governed response procedure enter one run."
   },
   {
-    label: "Governed procedure",
-    detail: "The graph loads the Unity Catalog response Skill before deciding what to do."
+    label: "MCP runtime discovery",
+    detail: "The graph discovers governed maintenance capabilities at runtime; the UI does not prescribe a tool order."
   },
   {
-    label: "Reason and select",
-    detail: "The model evaluates evidence and chooses from tools discovered at runtime."
+    label: "LangGraph model reasoning",
+    detail: "LangGraph invokes the Foundation Model API through Unity Gateway Model Service to evaluate evidence and choose the next action."
   },
   {
-    label: "Governed tool call",
-    detail: "Unity Gateway applies service policy before the MCP capability can execute."
+    label: "Governed MCP tool execution",
+    detail: "Unity Gateway applies service policy before the selected MCP maintenance capability can execute."
   }
 ] as const;
 
@@ -97,16 +97,20 @@ export function AgentGraphView() {
         <div className="agent-branch-grid">
           <article className="agent-branch-card agent-branch-loop">
             <span>Continue</span><strong>Tool evidence returns to reasoning</strong>
-            <p>The graph can select another discovered capability without a UI-imposed tool order.</p>
+            <p>LangGraph can reason over the result and select another capability discovered at runtime.</p>
           </article>
           <article className="agent-branch-card agent-branch-ask">
-            <span>Native ASK</span><strong>Pause for human approval</strong>
-            <p>The exact pending request resumes once after Unity Gateway records approval.</p>
+            <span>Native Gateway ASK</span><strong>Human approval and exact replay</strong>
+            <p>The graph pauses for approval, then replays the exact pending request once through Unity Gateway.</p>
           </article>
           <article className="agent-branch-card agent-branch-complete">
-            <span>Complete</span><strong>Return evidence and outcome</strong>
-            <p>The run closes with its response, work order and immutable governance receipt.</p>
+            <span>Complete / no action</span><strong>Return the governed outcome</strong>
+            <p>The run closes with a work order when warranted, or a recorded no-action decision.</p>
           </article>
+        </div>
+        <div className="agent-evidence-persistence">
+          <span>MLflow evidence persistence</span>
+          <p>Execution traces preserve the model, orchestration and governed tool evidence produced by actual runs.</p>
         </div>
       </section>
 

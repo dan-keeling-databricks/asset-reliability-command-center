@@ -174,6 +174,15 @@ def test_agent_graph_tab_separates_design_from_live_mlflow_evidence() -> None:
     assert 'fetch("/api/agent-observability"' in graph_source
     assert "Static architecture" in graph_source
     assert "Design view · not a live execution trace" in graph_source
+    assert "MCP runtime discovery" in graph_source
+    assert "LangGraph model reasoning" in graph_source
+    assert "Unity Gateway Model Service" in graph_source
+    assert "Foundation Model API" in graph_source
+    assert "Governed MCP tool execution" in graph_source
+    assert "Native Gateway ASK" in graph_source
+    assert "Human approval and exact replay" in graph_source
+    assert "Complete / no action" in graph_source
+    assert "MLflow evidence persistence" in graph_source
     assert "Live runtime evidence" in graph_source
     assert "Links returned by the deployed App" in graph_source
     assert "Open MLflow experiment" in graph_source
