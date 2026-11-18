@@ -39,6 +39,7 @@ TypeScript, Vite build and strict bundle validation.
 | CI-004 | `npm ci` reported one high-severity Vite advisory, while the deployment gate did not run `npm audit`. | Code/quality defect | Vite was updated to a non-vulnerable release and high-severity audit is now part of preflight. |
 | CI-005 | Databricks Apps package installation reported conflicts with unused packages preinstalled in the base image. | Platform/build warning | The App started successfully and the declared runtime imports do not use those packages. Retain as an observable warning; do not add unrelated dependency pins solely to silence the base image. |
 | CI-006 | The data-plane helper reported RTM `RUNNING` with `telemetry_freshness_verified: false`; freshness remains an authenticated App acceptance gate. | Acceptance boundary | Keep installation success separate from end-to-end acceptance, as the guide requires. |
+| CI-007 | `bundle destroy` hid the deleted Lakebase project from normal listing but retained a seven-day tombstone. Reinstalling with the same ID failed with `A soft-deleted project currently has this resource name`. | Decommissioning defect | The clean-room procedure now requires direct `get-project` inspection and an explicit, retention-approved `delete-project --purge` for a dedicated demo project. |
 
 After correcting only CI-001 at the command line, the remaining first attempt completed:
 
@@ -50,6 +51,9 @@ After correcting only CI-001 at the command line, the remaining first attempt co
 - Unity Gateway returned native `ASK` for `submit_work_order` and did not execute it; and
 - the managed MLflow experiment and Unity Catalog trace tables were created.
 
-This was not a clean pass because CI-001 required an undocumented correction. A successful second
-cycle after full demo-resource removal is required before this record can declare the guide
-clean-install validated.
+This was not a clean pass because CI-001 required an undocumented correction. The first attempt
+to start cycle 2 also failed on CI-007, proving that ordinary list calls were insufficient to
+verify a clean Lakebase target. After the exact deleted demo project was explicitly purged,
+`get-project` returned `NOT_FOUND`, and the App, Asset Reliability jobs and project schema
+inventories were empty. A successful retry from that state is required before this record can
+declare the guide clean-install validated.

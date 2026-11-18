@@ -395,3 +395,44 @@ schema, checkpoint volume, Lakebase data or project only after the customer data
 retention and ownership. Never run `bundle destroy` against an unreviewed target or assume it owns
 the existing catalog, warehouse or group.
 
+### Clean-room reinstall of a dedicated demo
+
+This narrower procedure is only for an installation whose App, schema, Lakebase project,
+experiment, jobs and governed agent assets are all dedicated to this demo. It is destructive.
+Obtain the data owner's explicit retention decision before using it; do not apply it to a reused
+customer Lakebase project or shared schema.
+
+1. Stop the App and cancel the active continuous RTM run.
+2. Delete the governed MCP service, its source connection and the Skill. These are reconciled by
+   the installer but are not bundle resources.
+3. Run `databricks bundle destroy --target <target> --profile <profile> --auto-approve` with
+   the same complete `--var` set used for installation.
+4. Inventory Apps, Asset Reliability jobs, the project schema, Model Service, experiment,
+   connection, Skill and MCP service; every demo-owned lookup must be absent.
+5. Inspect the deleted Lakebase project directly:
+
+```bash
+databricks postgres get-project projects/<lakebase-project-id> \
+  --profile <customer-profile> -o json
+```
+
+`bundle destroy` soft-deletes the Lakebase project. Normal project listing hides it, but its
+resource ID remains reserved until `purge_time`—seven days by default. An immediate clean-room
+retry with the same ID otherwise fails with:
+
+```text
+A soft-deleted project currently has this resource name.
+```
+
+Only after confirming the exact project is the dedicated deleted demo and its data may be
+permanently destroyed, purge that tombstone:
+
+```bash
+databricks postgres delete-project projects/<lakebase-project-id> \
+  --purge \
+  --profile <customer-profile>
+```
+
+Verify `get-project` now returns `NOT_FOUND` before declaring the workspace clean. Purging is
+not a rollback mechanism and must never be automated for a customer-owned project.
+
