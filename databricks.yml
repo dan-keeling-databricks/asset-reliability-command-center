@@ -350,7 +350,6 @@ resources:
         service_principal_name: ${var.app_service_principal_client_id}
       catalog: ${var.catalog}
       schema: ${var.schema}
-      development: false
       edition: ADVANCED
       channel: CURRENT
       serverless: false

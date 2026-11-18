@@ -36,6 +36,26 @@ def test_schema_persists_command_leases_and_immutable_governance_receipts() -> N
     assert "governance_receipts_are_immutable" in schema
 
 
+def test_new_scenarios_create_both_normal_transients_atomically() -> None:
+    source = (
+        Path(__file__).resolve().parents[1] / "backend" / "lakebase_repository.py"
+    ).read_text()
+
+    assert "async def _create_normal_transient_events" in source
+    assert "'P-202', 'startup_recirculation'" in source
+    assert "'P-207', 'valve_transition'" in source
+    allocator = source[
+        source.index("async def _resolve_sandbox_once"):source.index(
+            "async def active_sandboxes"
+        )
+    ]
+    restart = source[
+        source.index("async def restart_scenario"):source.index("async def register_user")
+    ]
+    assert "await self._create_normal_transient_events" in allocator
+    assert "await self._create_normal_transient_events" in restart
+
+
 def test_schema_repairs_legacy_leases_and_adds_versioned_approval_claims() -> None:
     schema = (Path(__file__).resolve().parents[1] / "sql" / "lakebase_schema.sql").read_text()
 
