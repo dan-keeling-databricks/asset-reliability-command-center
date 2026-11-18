@@ -56,6 +56,7 @@ REQUIRED_TABLES = {
     "sandboxes",
     "sandbox_slots",
     "sandbox_controls",
+    "normal_transient_events",
     "agent_run_contexts",
 }
 

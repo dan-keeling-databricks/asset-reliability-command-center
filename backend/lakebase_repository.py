@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, TypeVar
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import psycopg
 from psycopg import sql
@@ -405,6 +405,9 @@ class LakebaseCommandCenterRepository:
                         ).format(self.table("scenario_runs")),
                         (scenario_id, sandbox_id, user.email),
                     )
+                    await self._create_normal_transient_events(
+                        connection, scenario_id, user.email
+                    )
                 row = await (
                     await connection.execute(
                         sql.SQL(
@@ -421,6 +424,25 @@ class LakebaseCommandCenterRepository:
             owner_email=row["owner_email"],
             expires_at=row["expires_at"],
             version=row["version"],
+        )
+
+    async def _create_normal_transient_events(
+        self,
+        connection: psycopg.AsyncConnection[Any],
+        scenario_id: UUID,
+        requested_by: str | None,
+    ) -> None:
+        """Create the two idempotent benign transients owned by a new scenario."""
+
+        await connection.execute(
+            sql.SQL(
+                """INSERT INTO {} (scenario_id, pump_id, transient_type, requested_by)
+                VALUES
+                  (%s, 'P-202', 'startup_recirculation', %s),
+                  (%s, 'P-207', 'valve_transition', %s)
+                ON CONFLICT (scenario_id, pump_id) DO NOTHING"""
+            ).format(self.table("normal_transient_events")),
+            (scenario_id, requested_by, scenario_id, requested_by),
         )
 
     async def active_sandboxes(self) -> list[SandboxState]:
@@ -1053,6 +1075,9 @@ class LakebaseCommandCenterRepository:
                         "VALUES (%s, %s, 'active', %s)"
                     ).format(self.table("scenario_runs")),
                     (scenario_id, sandbox_id, requested_by),
+                )
+                await self._create_normal_transient_events(
+                    connection, scenario_id, requested_by
                 )
                 await connection.execute(
                     sql.SQL(

@@ -208,9 +208,12 @@ def test_normal_transients_are_one_shot_per_personal_scenario() -> None:
 
     schema = (ROOT / "sql" / "lakebase_schema.sql").read_text()
 
-    assert "scenario.started_at" in schema
-    assert "transient_seconds BETWEEN 0.0 AND 10.0" in schema
-    assert "transient_seconds >= 0.0 AND transient_phase BETWEEN 0.0 AND 11.0" in schema
+    assert "CREATE TABLE IF NOT EXISTS asset_reliability.normal_transient_events" in schema
+    assert "PRIMARY KEY (scenario_id, pump_id)" in schema
+    assert "status IN ('pending', 'active', 'completed')" in schema
+    assert "FOR UPDATE" in schema
+    assert "SET status = 'active', started_at = transient_started_at" in schema
+    assert "SET status = 'completed', completed_at = NEW.event_time" in schema
     assert "NEW.pump_id = 'P-202'" in schema
     assert "NEW.pump_id = 'P-207'" in schema
     assert "POWER(SIN(PI()" in schema
