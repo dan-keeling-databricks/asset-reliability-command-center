@@ -203,16 +203,10 @@ uv run ruff check backend tests src scripts
 uv run pytest
 npm --prefix frontend run typecheck
 npm --prefix frontend run build
-uv run python scripts/deploy.py \
-  --profile fe_vm_rtm \
-  --target dev \
-  --expected-host https://fevm-classic-stable-realtime-demos.cloud.databricks.com \
-  --access-group users \
-  --catalog classic_stable_realtime_demos_catalog \
-  --schema asset_reliability_command_center \
-  --app-name asset-reliability-center
+uv run python scripts/deploy.py --help
 ```
 
-The deployment preflight also stages the runtime-only App source and validates the bundle without
-changing the workspace. Deployment remains manual. Use only the checked entry point documented in
-[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md); a Git push or merge never changes the workspace.
+The checked `preflight` operation takes explicit customer values, stages the runtime-only App
+source and strictly validates the bundle without changing the workspace. Use the complete command
+in [Customer installation and lifecycle](docs/CUSTOMER_DEPLOYMENT.md). Deployment remains manual;
+a Git push or merge never changes the workspace.
