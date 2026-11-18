@@ -41,11 +41,12 @@ def inputs() -> DeploymentInputs:
         lakebase_database="asset-reliability-db",
         lakebase_database_resource_name="asset-reliability-db-resource",
         lakebase_endpoint_name="primary",
-        lakebase_endpoint_path="projects/customer-project/branches/production/endpoints/primary",
         lakebase_schema="asset_reliability",
         foundation_model="system.ai.databricks-claude-sonnet-4-5",
         model_service_name="asset_reliability_agent_model",
         mlflow_experiment_name="/Shared/customer-agent",
+        mlflow_trace_catalog="demo_catalog",
+        mlflow_trace_schema="agent_traces",
         mlflow_trace_table_prefix="customer_agent",
         sandbox_capacity=40,
         telemetry_samples_per_second=2,
@@ -65,15 +66,15 @@ def test_deployment_steps_are_explicit_and_dependency_ordered() -> None:
 
     assert labels == [
         "Deploy the personal-sandbox Rate data plane in readiness-gated phases",
-        "Deploy the App snapshot after Rate telemetry is ready",
         "Create or update the Unity Gateway policy function",
         "Reconcile the Skill, MCP source, service, selectors, and ASK policy",
+        "Deploy the App snapshot after Rate telemetry is ready",
     ]
     for step in steps:
         if step.command[0] == "databricks":
             assert "--profile" in step.command
             assert "explicit-profile" in step.command
-    assert steps[3].environment == {
+    assert steps[2].environment == {
         "DATABRICKS_CONFIG_PROFILE": "explicit-profile",
         "ASSET_RELIABILITY_CATALOG": "demo_catalog",
         "ASSET_RELIABILITY_SCHEMA": "asset_reliability",
@@ -84,7 +85,7 @@ def test_deployment_steps_are_explicit_and_dependency_ordered() -> None:
         "ASSET_RELIABILITY_POLICY_FUNCTION_NAME": "submit_work_order_policy",
         "ASSET_RELIABILITY_UC_AUDIENCE": "account users",
     }
-    assert steps[3].command == [
+    assert steps[2].command == [
         "uv",
         "run",
         "python",
@@ -227,7 +228,7 @@ def _write_minimal_runtime(root: Path) -> None:
         "frontend/dist/index.html": "<main>command center</main>\n",
         "frontend/dist/assets/index.js": "export {};\n",
         "sql/lakebase_schema.sql": "SELECT 1;\n",
-        "app.yaml": "command: [uvicorn, backend.main:app]\n",
+        "app.yaml.template": "command: [uvicorn, backend.main:app]\nenv: []\n",
         "pyproject.toml": "[project]\nname='test'\nversion='0.0.0'\n",
         "uv.lock": "version = 1\n",
         "requirements.txt": "fastapi==1.0.0\n",
@@ -278,7 +279,7 @@ def test_app_staging_generates_environment_config_without_changing_template(
     tmp_path: Path,
 ) -> None:
     _write_minimal_runtime(tmp_path)
-    template = tmp_path / "app.yaml"
+    template = tmp_path / "app.yaml.template"
     template.write_text(
         "command: [uvicorn, backend.main:app]\n"
         "env:\n"

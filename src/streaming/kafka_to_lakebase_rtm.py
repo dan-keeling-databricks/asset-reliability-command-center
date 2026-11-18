@@ -54,7 +54,7 @@ from pyspark.sql.types import (
 dbutils.widgets.text("catalog", "")
 dbutils.widgets.text("schema", "")
 dbutils.widgets.text("volume", "runtime")
-dbutils.widgets.text("kafka_bootstrap", "63.186.81.193:443")
+dbutils.widgets.text("kafka_bootstrap", "")
 dbutils.widgets.text("kafka_topic", "asset-reliability-pump-telemetry")
 dbutils.widgets.text(
     "lakebase_endpoint",

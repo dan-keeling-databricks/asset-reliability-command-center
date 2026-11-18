@@ -43,12 +43,12 @@ APP_RUNTIME_DIRECTORIES = (
 )
 APP_RUNTIME_FILES = (
     Path("sql/lakebase_schema.sql"),
-    Path("app.yaml"),
     Path("pyproject.toml"),
     Path("uv.lock"),
     Path("requirements.txt"),
     Path(".build-info.json"),
 )
+APP_CONFIG_TEMPLATE = Path("app.yaml.template")
 APP_IGNORED_NAMES = {".DS_Store", ".databrickscfg", ".env", "__pycache__"}
 APP_IGNORED_SUFFIXES = {".pyc", ".pyo"}
 APP_FORBIDDEN_TOP_LEVEL = {
@@ -82,11 +82,12 @@ class DeploymentInputs:
     lakebase_database: str
     lakebase_database_resource_name: str
     lakebase_endpoint_name: str
-    lakebase_endpoint_path: str
     lakebase_schema: str
     foundation_model: str
     model_service_name: str
     mlflow_experiment_name: str
+    mlflow_trace_catalog: str
+    mlflow_trace_schema: str
     mlflow_trace_table_prefix: str
     sandbox_capacity: int
     telemetry_samples_per_second: int
@@ -136,11 +137,18 @@ class DeploymentInputs:
             "foundation_model": self.foundation_model,
             "model_service_name": self.model_service_name,
             "mlflow_experiment_name": self.mlflow_experiment_name,
+            "mlflow_trace_catalog": self.mlflow_trace_catalog,
+            "mlflow_trace_schema": self.mlflow_trace_schema,
             "mlflow_trace_table_prefix": self.mlflow_trace_table_prefix,
+            "mcp_service_name": self.mcp_service_id,
+            "governed_skill_name": self.skill_id,
+            "policy_function_name": self.policy_function_name,
+            "global_agent_concurrency": self.global_agent_concurrency,
             "sandbox_capacity": self.sandbox_capacity,
             "telemetry_samples_per_second": self.telemetry_samples_per_second,
             "telemetry_source_partitions": self.telemetry_source_partitions,
             "app_name": self.app_name,
+            "workspace_host": self.expected_host.rstrip("/"),
         }
         flags = ["--target", self.target, "--profile", self.profile]
         for name, value in variables.items():
@@ -231,11 +239,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lakebase-database", required=True)
     parser.add_argument("--lakebase-database-resource-name", required=True)
     parser.add_argument("--lakebase-endpoint-name", required=True)
-    parser.add_argument("--lakebase-endpoint-path", required=True)
     parser.add_argument("--lakebase-schema", required=True)
     parser.add_argument("--foundation-model", required=True)
     parser.add_argument("--model-service-name", required=True)
     parser.add_argument("--mlflow-experiment-name", required=True)
+    parser.add_argument("--mlflow-trace-catalog", required=True)
+    parser.add_argument("--mlflow-trace-schema", required=True)
     parser.add_argument("--mlflow-trace-table-prefix", required=True)
     parser.add_argument("--sandbox-capacity", required=True, type=int)
     parser.add_argument("--telemetry-samples-per-second", required=True, type=int)
@@ -325,6 +334,7 @@ def stage_app_source(
 
     required = [*(root / path for path in APP_RUNTIME_DIRECTORIES)]
     required.extend(root / path for path in APP_RUNTIME_FILES)
+    required.append(root / APP_CONFIG_TEMPLATE)
     missing = [str(path.relative_to(root)) for path in required if not path.exists()]
     if missing:
         raise RuntimeError("App runtime inputs are missing: " + ", ".join(missing))
@@ -350,7 +360,7 @@ def stage_app_source(
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(root / relative, target)
     if inputs:
-        generate_app_config(root / "app.yaml", destination / "app.yaml", inputs)
+        generate_app_config(root / APP_CONFIG_TEMPLATE, destination / "app.yaml", inputs)
 
     staged_top_level = {path.name for path in destination.iterdir()}
     forbidden = sorted(staged_top_level & APP_FORBIDDEN_TOP_LEVEL)
@@ -374,7 +384,9 @@ def generated_app_environment(inputs: DeploymentInputs) -> dict[str, str]:
 
     host = inputs.expected_host.rstrip("/")
     return {
-        "MLFLOW_TRACING_DESTINATION": inputs.schema_fqn,
+        "MLFLOW_TRACING_DESTINATION": (
+            f"{inputs.mlflow_trace_catalog}.{inputs.mlflow_trace_schema}"
+        ),
         "GOVERNED_MCP_ENDPOINT": (
             f"{host}/ai-gateway/mcp-services/{inputs.mcp_service_fqn}"
         ),
@@ -591,7 +603,7 @@ def run_quality_gate(runner: Runner, inputs: DeploymentInputs) -> None:
     assert_frontend_fresh()
     staged = stage_app_source(inputs=inputs)
     print(f"Staged runtime-only App source at {staged.relative_to(ROOT)}", flush=True)
-    runner.run(["databricks", "bundle", "validate", *inputs.bundle_flags])
+    runner.run(["databricks", "bundle", "validate", "--strict", *inputs.bundle_flags])
     runner.run(["git", "diff", "--exit-code"])
 
 
@@ -675,6 +687,8 @@ def deployment_steps(
                 inputs.volume,
                 "--warehouse-id",
                 inputs.warehouse_id,
+                "--workspace-host",
+                inputs.expected_host.rstrip("/"),
                 "--app-name",
                 inputs.app_name,
                 "--lakebase-project-id",
@@ -687,8 +701,6 @@ def deployment_steps(
                 inputs.lakebase_database_resource_name,
                 "--lakebase-endpoint-name",
                 inputs.lakebase_endpoint_name,
-                "--lakebase-endpoint-path",
-                inputs.lakebase_endpoint_path,
                 "--lakebase-schema",
                 inputs.lakebase_schema,
                 "--foundation-model",
@@ -697,8 +709,20 @@ def deployment_steps(
                 inputs.model_service_name,
                 "--mlflow-experiment-name",
                 inputs.mlflow_experiment_name,
+                "--mlflow-trace-catalog",
+                inputs.mlflow_trace_catalog,
+                "--mlflow-trace-schema",
+                inputs.mlflow_trace_schema,
                 "--mlflow-trace-table-prefix",
                 inputs.mlflow_trace_table_prefix,
+                "--mcp-service-name",
+                inputs.mcp_service_id,
+                "--governed-skill-name",
+                inputs.skill_id,
+                "--policy-function-name",
+                inputs.policy_function_name,
+                "--global-agent-concurrency",
+                str(inputs.global_agent_concurrency),
                 "--sandbox-capacity",
                 str(inputs.sandbox_capacity),
                 "--telemetry-samples-per-second",
@@ -710,7 +734,6 @@ def deployment_steps(
                 "--deploy",
             ],
         ),
-        app_step,
         Step(
             "Create or update the Unity Gateway policy function",
             ["databricks", "bundle", "run", *flags, "setup_unity_governance"],
@@ -730,6 +753,7 @@ def deployment_steps(
                 "ASSET_RELIABILITY_UC_AUDIENCE": "account users",
             },
         ),
+        app_step,
     ]
 
 
@@ -785,7 +809,7 @@ def ensure_app_user_scopes(
         "-o",
         "json",
     ]
-    required = {"ai-gateway", "genie"}
+    required = {"ai-gateway"}
     app = runner.json(get_command)
     effective = set(app.get("effective_user_api_scopes", []))
     if required <= effective:
@@ -806,7 +830,7 @@ def ensure_app_user_scopes(
             return
         time.sleep(5)
     raise RuntimeError(
-        "App did not become RUNNING with ai-gateway and genie OBO scopes"
+        "App did not become RUNNING with the ai-gateway OBO scope"
     )
 
 
@@ -849,11 +873,12 @@ def main() -> None:
         lakebase_database=args.lakebase_database,
         lakebase_database_resource_name=args.lakebase_database_resource_name,
         lakebase_endpoint_name=args.lakebase_endpoint_name,
-        lakebase_endpoint_path=args.lakebase_endpoint_path,
         lakebase_schema=args.lakebase_schema,
         foundation_model=args.foundation_model,
         model_service_name=args.model_service_name,
         mlflow_experiment_name=args.mlflow_experiment_name,
+        mlflow_trace_catalog=args.mlflow_trace_catalog,
+        mlflow_trace_schema=args.mlflow_trace_schema,
         mlflow_trace_table_prefix=args.mlflow_trace_table_prefix,
         sandbox_capacity=args.sandbox_capacity,
         telemetry_samples_per_second=args.telemetry_samples_per_second,

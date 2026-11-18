@@ -21,10 +21,6 @@ DEFAULT_TIMEOUT_SECONDS = 1_200
 COMPUTE_POLICY_KEY = "asset_reliability_workloads"
 LAKEBASE_MIGRATION_KEY = "migrate_lakebase_schema"
 RATE_JOB_KEY = "telemetry_rtm"
-OBSOLETE_CONTINUOUS_JOB_KEYS = (
-    "telemetry_producer",
-    "governed_telemetry_history_continuous",
-)
 
 
 def run(
@@ -60,6 +56,7 @@ def bundle_command(action: str, args: argparse.Namespace, *extra: str) -> list[s
         "schema": args.schema,
         "volume": args.volume,
         "warehouse_id": args.warehouse_id,
+        "workspace_host": args.workspace_host,
         "app_name": args.app_name,
         "lakebase_project_id": args.lakebase_project_id,
         "lakebase_branch_name": args.lakebase_branch,
@@ -70,7 +67,13 @@ def bundle_command(action: str, args: argparse.Namespace, *extra: str) -> list[s
         "foundation_model": args.foundation_model,
         "model_service_name": args.model_service_name,
         "mlflow_experiment_name": args.mlflow_experiment_name,
+        "mlflow_trace_catalog": args.mlflow_trace_catalog,
+        "mlflow_trace_schema": args.mlflow_trace_schema,
         "mlflow_trace_table_prefix": args.mlflow_trace_table_prefix,
+        "mcp_service_name": args.mcp_service_name,
+        "governed_skill_name": args.governed_skill_name,
+        "policy_function_name": args.policy_function_name,
+        "global_agent_concurrency": args.global_agent_concurrency,
         "sandbox_capacity": args.sandbox_capacity,
         "telemetry_samples_per_second": args.telemetry_samples_per_second,
         "telemetry_source_partitions": args.telemetry_source_partitions,
@@ -447,9 +450,6 @@ def deploy(args: argparse.Namespace) -> None:
     # them through MLflow. This setup job is idempotent and blocks App deployment on failure.
     run(bundle_command("run", args, "setup_agent_observability_access"))
     grant_bundle_source_read(args)
-    for resource_key in OBSOLETE_CONTINUOUS_JOB_KEYS:
-        stop_continuous_job(args, resource_key)
-
     # Pause the continuous trigger before cancellation so Databricks cannot replace an old parent
     # while it is being drained. Only after active_job_runs is empty do we resume the trigger and
     # request a fresh parent/task pair.
@@ -504,18 +504,24 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--volume", required=True)
     parser.add_argument("--warehouse-id", required=True)
+    parser.add_argument("--workspace-host", required=True)
     parser.add_argument("--app-name", required=True)
     parser.add_argument("--lakebase-project-id", required=True)
     parser.add_argument("--lakebase-branch", required=True)
     parser.add_argument("--lakebase-database", required=True)
     parser.add_argument("--lakebase-database-resource-name", required=True)
     parser.add_argument("--lakebase-endpoint-name", required=True)
-    parser.add_argument("--lakebase-endpoint-path", required=True)
     parser.add_argument("--lakebase-schema", required=True)
     parser.add_argument("--foundation-model", required=True)
     parser.add_argument("--model-service-name", required=True)
     parser.add_argument("--mlflow-experiment-name", required=True)
+    parser.add_argument("--mlflow-trace-catalog", required=True)
+    parser.add_argument("--mlflow-trace-schema", required=True)
     parser.add_argument("--mlflow-trace-table-prefix", required=True)
+    parser.add_argument("--mcp-service-name", required=True)
+    parser.add_argument("--governed-skill-name", required=True)
+    parser.add_argument("--policy-function-name", required=True)
+    parser.add_argument("--global-agent-concurrency", required=True, type=int)
     parser.add_argument("--sandbox-capacity", required=True, type=int)
     parser.add_argument("--telemetry-samples-per-second", required=True, type=int)
     parser.add_argument("--telemetry-source-partitions", required=True, type=int)

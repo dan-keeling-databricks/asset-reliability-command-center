@@ -22,18 +22,24 @@ def deployment_args(**overrides) -> Namespace:
         "schema": "schema",
         "volume": "runtime",
         "warehouse_id": "warehouse-123",
+        "workspace_host": "https://workspace.example",
         "app_name": "customer-app",
         "lakebase_project_id": "customer-project",
         "lakebase_branch": "main",
         "lakebase_database": "customer-database",
         "lakebase_database_resource_name": "customer-database-resource",
         "lakebase_endpoint_name": "primary",
-        "lakebase_endpoint_path": "projects/customer-project/branches/main/endpoints/primary",
         "lakebase_schema": "asset_reliability",
         "foundation_model": "system.ai.customer-model",
         "model_service_name": "agent-model",
         "mlflow_experiment_name": "/Shared/customer-agent",
+        "mlflow_trace_catalog": "catalog",
+        "mlflow_trace_schema": "agent_traces",
         "mlflow_trace_table_prefix": "customer_agent",
+        "mcp_service_name": "asset_reliability_mcp",
+        "governed_skill_name": "asset-reliability-response",
+        "policy_function_name": "submit_work_order_policy",
+        "global_agent_concurrency": 20,
         "sandbox_capacity": 40,
         "telemetry_samples_per_second": 2,
         "telemetry_source_partitions": 4,
@@ -353,7 +359,9 @@ def test_runtime_principal_grant_is_minimal_and_idempotent() -> None:
     assert "ALL PRIVILEGES" not in grants
 
 
-def test_deployment_helper_migrates_stops_legacy_and_starts_rate(monkeypatch) -> None:
+def test_deployment_helper_migrates_and_starts_rate_without_optional_reference_jobs(
+    monkeypatch,
+) -> None:
     events: list[tuple[object, ...]] = []
     args = deployment_args()
 
@@ -413,8 +421,6 @@ def test_deployment_helper_migrates_stops_legacy_and_starts_rate(monkeypatch) ->
         "run",
         "run",
         "grant_source_read",
-        "stop",
-        "stop",
         "pause_status",
         "stop",
         "pause_status",
@@ -444,11 +450,7 @@ def test_deployment_helper_migrates_stops_legacy_and_starts_rate(monkeypatch) ->
     assert "lakebase_endpoint_name=primary" in events[5]
     assert "--auto-approve" in events[5]
     assert "setup_agent_observability_access" in events[6]
-    assert events[8:10] == [
-        ("stop", "telemetry_producer"),
-        ("stop", "governed_telemetry_history_continuous"),
-    ]
-    assert events[10:] == [
+    assert events[8:] == [
         ("pause_status", "telemetry_rtm", "PAUSED"),
         ("stop", "telemetry_rtm"),
         ("pause_status", "telemetry_rtm", "UNPAUSED"),
