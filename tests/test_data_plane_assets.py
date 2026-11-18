@@ -435,6 +435,7 @@ def test_deployment_helper_migrates_and_starts_rate_without_optional_reference_j
     ]
     assert events[0] == (
         "select",
+        "volumes.runtime_volume",
         "cluster_policies.asset_reliability_workloads",
         "jobs.setup_runtime_principal_access",
         "jobs.migrate_lakebase_schema",

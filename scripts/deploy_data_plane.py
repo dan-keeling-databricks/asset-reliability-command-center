@@ -429,6 +429,7 @@ def deploy(args: argparse.Namespace) -> None:
     # Continuous workloads retain their previous identity until all prerequisite grants exist.
     selective_deploy(
         args,
+        "volumes.runtime_volume",
         "cluster_policies.asset_reliability_workloads",
         "jobs.setup_runtime_principal_access",
         f"jobs.{LAKEBASE_MIGRATION_KEY}",
