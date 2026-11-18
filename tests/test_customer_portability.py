@@ -227,6 +227,7 @@ def test_bundle_has_a_production_mode_target_for_shared_installations() -> None:
     bundle = (ROOT / "databricks.yml").read_text(encoding="utf-8")
 
     assert "  prod:\n    mode: production" in bundle
+    assert "root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/" in bundle
 
 
 def test_readme_links_customer_installation_guide() -> None:
