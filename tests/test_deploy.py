@@ -53,6 +53,7 @@ def inputs() -> DeploymentInputs:
         mlflow_trace_catalog="demo_catalog",
         mlflow_trace_schema="agent_traces",
         mlflow_trace_table_prefix="customer_agent",
+        mlflow_trace_reader_principal="customer-trace-readers",
         sandbox_capacity=40,
         telemetry_samples_per_second=2,
         telemetry_source_partitions=4,

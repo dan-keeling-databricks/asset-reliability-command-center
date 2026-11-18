@@ -49,6 +49,7 @@ observability:
   trace_catalog: <unity-catalog-trace-catalog>
   trace_schema: <unity-catalog-trace-schema>
   trace_table_prefix: <unity-catalog-trace-table-prefix>
+  trace_reader_principal: <existing-unity-catalog-principal>
 
 # These assets are retained for architecture reference and are not required by the default demo.
 # Enabling them is a separate production-integration project, not an installation toggle.

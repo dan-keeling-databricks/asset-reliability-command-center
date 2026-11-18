@@ -34,6 +34,8 @@ def test_observability_grants_are_explicit_and_least_privilege() -> None:
         assert f"_otel_{suffix}" in grants
     assert "GRANT MODIFY, SELECT ON TABLE" in grants
     assert "GRANT SELECT ON TABLE" in grants
+    assert ":trace_reader_principal" in grants
+    assert ":app_access_group" not in grants
     assert "ALL PRIVILEGES" not in grants
     assert "CREATE USER" not in grants
     assert "CREATE GROUP" not in grants

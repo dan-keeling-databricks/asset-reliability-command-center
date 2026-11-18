@@ -37,6 +37,7 @@ def deployment_args(**overrides) -> Namespace:
         "mlflow_trace_catalog": "catalog",
         "mlflow_trace_schema": "agent_traces",
         "mlflow_trace_table_prefix": "customer_agent",
+        "mlflow_trace_reader_principal": "customer-trace-readers",
         "mcp_service_name": "asset_reliability_mcp",
         "governed_skill_name": "asset-reliability-response",
         "policy_function_name": "submit_work_order_policy",
@@ -453,6 +454,7 @@ def test_deployment_helper_migrates_and_starts_rate_without_optional_reference_j
         "--profile",
     )
     assert "app_access_group=existing-group" in events[5]
+    assert "mlflow_trace_reader_principal=customer-trace-readers" in events[5]
     assert "catalog=catalog" in events[5]
     assert "lakebase_branch_name=main" in events[5]
     assert "lakebase_database_name=customer-database" in events[5]

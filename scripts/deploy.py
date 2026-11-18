@@ -91,6 +91,7 @@ class DeploymentInputs:
     mlflow_trace_catalog: str
     mlflow_trace_schema: str
     mlflow_trace_table_prefix: str
+    mlflow_trace_reader_principal: str
     sandbox_capacity: int
     telemetry_samples_per_second: int
     telemetry_source_partitions: int
@@ -143,6 +144,7 @@ class DeploymentInputs:
             "mlflow_trace_catalog": self.mlflow_trace_catalog,
             "mlflow_trace_schema": self.mlflow_trace_schema,
             "mlflow_trace_table_prefix": self.mlflow_trace_table_prefix,
+            "mlflow_trace_reader_principal": self.mlflow_trace_reader_principal,
             "mcp_service_name": self.mcp_service_id,
             "governed_skill_name": self.skill_id,
             "policy_function_name": self.policy_function_name,
@@ -254,6 +256,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mlflow-trace-catalog", required=True)
     parser.add_argument("--mlflow-trace-schema", required=True)
     parser.add_argument("--mlflow-trace-table-prefix", required=True)
+    parser.add_argument(
+        "--mlflow-trace-reader-principal",
+        required=True,
+        help=(
+            "Existing Unity Catalog user, service principal, or account group granted read "
+            "access to the MLflow trace tables. This may differ from the workspace App group."
+        ),
+    )
     parser.add_argument("--sandbox-capacity", required=True, type=int)
     parser.add_argument("--telemetry-samples-per-second", required=True, type=int)
     parser.add_argument("--telemetry-source-partitions", required=True, type=int)
@@ -784,6 +794,8 @@ def deployment_steps(
                 inputs.mlflow_trace_schema,
                 "--mlflow-trace-table-prefix",
                 inputs.mlflow_trace_table_prefix,
+                "--mlflow-trace-reader-principal",
+                inputs.mlflow_trace_reader_principal,
                 "--mcp-service-name",
                 inputs.mcp_service_id,
                 "--governed-skill-name",
@@ -1055,6 +1067,7 @@ def main() -> None:
         mlflow_trace_catalog=args.mlflow_trace_catalog,
         mlflow_trace_schema=args.mlflow_trace_schema,
         mlflow_trace_table_prefix=args.mlflow_trace_table_prefix,
+        mlflow_trace_reader_principal=args.mlflow_trace_reader_principal,
         sandbox_capacity=args.sandbox_capacity,
         telemetry_samples_per_second=args.telemetry_samples_per_second,
         telemetry_source_partitions=args.telemetry_source_partitions,

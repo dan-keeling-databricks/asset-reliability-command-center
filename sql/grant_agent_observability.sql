@@ -9,7 +9,7 @@ DECLARE OR REPLACE VARIABLE trace_catalog STRING DEFAULT :catalog_name;
 DECLARE OR REPLACE VARIABLE trace_schema STRING DEFAULT :schema_name;
 DECLARE OR REPLACE VARIABLE trace_prefix STRING DEFAULT :table_prefix;
 DECLARE OR REPLACE VARIABLE app_principal STRING DEFAULT :app_service_principal;
-DECLARE OR REPLACE VARIABLE reader_group STRING DEFAULT :app_access_group;
+DECLARE OR REPLACE VARIABLE reader_principal STRING DEFAULT :trace_reader_principal;
 
 EXECUTE IMMEDIATE concat(
   'GRANT USE CATALOG ON CATALOG `', replace(trace_catalog, '`', '``'),
@@ -23,12 +23,12 @@ EXECUTE IMMEDIATE concat(
 
 EXECUTE IMMEDIATE concat(
   'GRANT USE CATALOG ON CATALOG `', replace(trace_catalog, '`', '``'),
-  '` TO `', replace(reader_group, '`', '``'), '`'
+  '` TO `', replace(reader_principal, '`', '``'), '`'
 );
 
 EXECUTE IMMEDIATE concat(
   'GRANT USE SCHEMA ON SCHEMA `', replace(trace_catalog, '`', '``'), '`.`',
-  replace(trace_schema, '`', '``'), '` TO `', replace(reader_group, '`', '``'), '`'
+  replace(trace_schema, '`', '``'), '` TO `', replace(reader_principal, '`', '``'), '`'
 );
 
 -- The App identity writes spans and assessments; viewers receive SELECT only.
@@ -40,7 +40,7 @@ EXECUTE IMMEDIATE concat(
 EXECUTE IMMEDIATE concat(
   'GRANT SELECT ON TABLE `', replace(trace_catalog, '`', '``'), '`.`',
   replace(trace_schema, '`', '``'), '`.`', replace(trace_prefix, '`', '``'),
-  '_otel_spans` TO `', replace(reader_group, '`', '``'), '`'
+  '_otel_spans` TO `', replace(reader_principal, '`', '``'), '`'
 );
 
 EXECUTE IMMEDIATE concat(
@@ -51,7 +51,7 @@ EXECUTE IMMEDIATE concat(
 EXECUTE IMMEDIATE concat(
   'GRANT SELECT ON TABLE `', replace(trace_catalog, '`', '``'), '`.`',
   replace(trace_schema, '`', '``'), '`.`', replace(trace_prefix, '`', '``'),
-  '_otel_logs` TO `', replace(reader_group, '`', '``'), '`'
+  '_otel_logs` TO `', replace(reader_principal, '`', '``'), '`'
 );
 
 EXECUTE IMMEDIATE concat(
@@ -62,7 +62,7 @@ EXECUTE IMMEDIATE concat(
 EXECUTE IMMEDIATE concat(
   'GRANT SELECT ON TABLE `', replace(trace_catalog, '`', '``'), '`.`',
   replace(trace_schema, '`', '``'), '`.`', replace(trace_prefix, '`', '``'),
-  '_otel_metrics` TO `', replace(reader_group, '`', '``'), '`'
+  '_otel_metrics` TO `', replace(reader_principal, '`', '``'), '`'
 );
 
 EXECUTE IMMEDIATE concat(
@@ -73,5 +73,5 @@ EXECUTE IMMEDIATE concat(
 EXECUTE IMMEDIATE concat(
   'GRANT SELECT ON TABLE `', replace(trace_catalog, '`', '``'), '`.`',
   replace(trace_schema, '`', '``'), '`.`', replace(trace_prefix, '`', '``'),
-  '_otel_annotations` TO `', replace(reader_group, '`', '``'), '`'
+  '_otel_annotations` TO `', replace(reader_principal, '`', '``'), '`'
 );

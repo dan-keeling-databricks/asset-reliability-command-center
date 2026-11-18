@@ -78,6 +78,10 @@ Important choices:
 - Use a workspace-absolute MLflow experiment path, such as
   `/Shared/<project>-agent`, and an existing Unity Catalog trace catalog/schema with a stable
   trace-table prefix. The trace location may be the project catalog/schema, but remains explicit.
+- Select an existing Unity Catalog principal for trace-table read access. This is deliberately
+  separate from the workspace-local App access group because workspace groups are not always
+  addressable as Unity Catalog principals. Prefer a customer-managed account group; a
+  workspace-catalog binding principal may be used when that is the intended audience.
 
 The App service principal is created with, and resolved from, the target App. Do not copy a client
 ID from another workspace. If an optional expected client ID is supplied during an update, it is
@@ -293,6 +297,7 @@ uv run python scripts/deploy.py preflight \
   --mlflow-trace-catalog "<unity-catalog-trace-catalog>" \
   --mlflow-trace-schema "<unity-catalog-trace-schema>" \
   --mlflow-trace-table-prefix "<unity-catalog-trace-table-prefix>" \
+  --mlflow-trace-reader-principal "<existing-unity-catalog-principal>" \
   --sandbox-capacity 32 \
   --telemetry-samples-per-second 2 \
   --telemetry-source-partitions 4 \

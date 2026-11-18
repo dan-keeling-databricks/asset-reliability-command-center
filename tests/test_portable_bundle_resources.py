@@ -27,6 +27,7 @@ def test_environment_specific_installation_inputs_have_no_committed_defaults() -
         "app_name",
         "warehouse_id",
         "app_access_group",
+        "mlflow_trace_reader_principal",
         "lakebase_project_id",
         "lakebase_branch_name",
         "lakebase_database_name",

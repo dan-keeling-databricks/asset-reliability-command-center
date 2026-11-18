@@ -32,6 +32,8 @@ variables:
     default: 4
   app_access_group:
     description: Existing workspace group admitted to the App; it does not assign product roles.
+  mlflow_trace_reader_principal:
+    description: Existing Unity Catalog principal granted read access to MLflow trace tables.
   lakebase_project_id:
     description: Lakebase Autoscaling project identifier for this installation.
   lakebase_branch_name:
@@ -223,7 +225,7 @@ resources:
               schema_name: ${var.mlflow_trace_schema}
               table_prefix: ${var.mlflow_trace_table_prefix}
               app_service_principal: ${resources.apps.command_center.service_principal_client_id}
-              app_access_group: ${var.app_access_group}
+              trace_reader_principal: ${var.mlflow_trace_reader_principal}
 
     migrate_lakebase_schema:
       name: Asset Reliability — migrate App-owned Lakebase schema

@@ -70,6 +70,7 @@ def bundle_command(action: str, args: argparse.Namespace, *extra: str) -> list[s
         "mlflow_trace_catalog": args.mlflow_trace_catalog,
         "mlflow_trace_schema": args.mlflow_trace_schema,
         "mlflow_trace_table_prefix": args.mlflow_trace_table_prefix,
+        "mlflow_trace_reader_principal": args.mlflow_trace_reader_principal,
         "mcp_service_name": args.mcp_service_name,
         "governed_skill_name": args.governed_skill_name,
         "policy_function_name": args.policy_function_name,
@@ -518,6 +519,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mlflow-trace-catalog", required=True)
     parser.add_argument("--mlflow-trace-schema", required=True)
     parser.add_argument("--mlflow-trace-table-prefix", required=True)
+    parser.add_argument("--mlflow-trace-reader-principal", required=True)
     parser.add_argument("--mcp-service-name", required=True)
     parser.add_argument("--governed-skill-name", required=True)
     parser.add_argument("--policy-function-name", required=True)
