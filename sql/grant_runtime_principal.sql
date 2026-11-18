@@ -37,12 +37,19 @@ EXECUTE IMMEDIATE concat(
   replace(runtime_principal, '`', '``'), '`'
 ) USING runtime_volume_fqn;
 
--- These statements produce text-readable deployment evidence of the effective grants.
-SHOW GRANTS
-ON CATALOG IDENTIFIER(runtime_catalog);
-
-SHOW GRANTS
-ON SCHEMA IDENTIFIER(runtime_schema_fqn);
-
-SHOW GRANTS
-ON VOLUME IDENTIFIER(runtime_volume_fqn);
+-- Produce portable, text-readable evidence without relying on SHOW GRANTS support for
+-- parameterised object identifiers.
+SELECT 'CATALOG' AS object_type, catalog_name AS object_name, privilege_type
+FROM system.information_schema.catalog_privileges
+WHERE catalog_name = runtime_catalog AND grantee = runtime_principal
+UNION ALL
+SELECT 'SCHEMA', concat(schema_catalog, '.', schema_name), privilege_type
+FROM system.information_schema.schema_privileges
+WHERE concat(schema_catalog, '.', schema_name) = runtime_schema_fqn
+  AND grantee = runtime_principal
+UNION ALL
+SELECT 'VOLUME', concat(volume_catalog, '.', volume_schema, '.', volume_name), privilege_type
+FROM system.information_schema.volume_privileges
+WHERE concat(volume_catalog, '.', volume_schema, '.', volume_name) = runtime_volume_fqn
+  AND grantee = runtime_principal
+ORDER BY object_type, object_name, privilege_type;

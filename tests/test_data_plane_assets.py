@@ -360,7 +360,9 @@ def test_runtime_principal_grant_is_minimal_and_idempotent() -> None:
     assert "GRANT CREATE TABLE" in grants
     assert "GRANT READ VOLUME" in grants
     assert "GRANT WRITE VOLUME" in grants
-    assert grants.count("SHOW GRANTS") == 3
+    assert "system.information_schema.catalog_privileges" in grants
+    assert "system.information_schema.schema_privileges" in grants
+    assert "system.information_schema.volume_privileges" in grants
     assert "CREATE USER" not in grants
     assert "CREATE GROUP" not in grants
     assert "ALL PRIVILEGES" not in grants
