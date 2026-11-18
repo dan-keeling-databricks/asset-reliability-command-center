@@ -303,9 +303,13 @@ def test_app_staging_generates_environment_config_without_changing_template(
     assert "maintainer-value" not in rendered
 
 
-def test_bundle_uses_dedicated_app_snapshot_without_moving_genie_definition() -> None:
-    bundle = (Path(__file__).resolve().parents[1] / "databricks.yml").read_text()
+def test_bundle_uses_dedicated_app_snapshot_and_opt_in_genie_definition() -> None:
+    root = Path(__file__).resolve().parents[1]
+    bundle = (root / "databricks.yml").read_text()
+    production_reference = (root / "resources" / "production_reference.yml").read_text()
 
     assert "source_code_path: ./.artifacts/app" in bundle
-    assert "file_path: ./genie/fleet_telemetry_analyst.geniespace.json" in bundle
+    assert "production_reference.yml" not in bundle
+    assert "file_path: ../genie/fleet_telemetry_analyst.geniespace.json" in production_reference
+    assert (root / "genie" / "fleet_telemetry_analyst.geniespace.json.template").is_file()
     assert "- .artifacts/app/**" in bundle

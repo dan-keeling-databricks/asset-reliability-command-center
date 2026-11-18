@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_app_uses_unity_gateway_model_service_and_managed_experiment() -> None:
     bundle = (ROOT / "databricks.yml").read_text()
-    app = (ROOT / "app.yaml").read_text()
+    app = (ROOT / "app.yaml.template").read_text()
 
     assert "model_services:" in bundle
     assert "DESTINATION_TYPE_PAY_PER_TOKEN_FOUNDATION_MODEL" in bundle
