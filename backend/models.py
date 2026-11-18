@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 def utc_now() -> datetime:
@@ -81,6 +81,15 @@ class RuntimeAction(BaseModel):
     kind: Literal["approval", "link", "command"]
     endpoint: str | None = None
     href: str | None = None
+
+    @field_validator("href")
+    @classmethod
+    def normalise_external_href(cls, value: str | None) -> str | None:
+        """Keep workspace links absolute when Apps inject DATABRICKS_HOST without a scheme."""
+
+        if not value or value.startswith(("http://", "https://", "/", "#", "mailto:")):
+            return value
+        return f"https://{value}"
 
 
 class ActivityDatum(BaseModel):

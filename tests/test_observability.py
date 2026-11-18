@@ -19,7 +19,9 @@ def test_observability_links_use_injected_workspace_and_experiment() -> None:
     assert result.framework == "LangGraph"
     assert result.status == "configured"
     assert result.experiment_url == "https://workspace.example/ml/experiments/123456789"
-    assert result.traces_url == result.experiment_url
+    assert result.traces_url == (
+        "https://workspace.example/ml/experiments/123456789/traces"
+    )
 
 
 def test_mlflow_configuration_is_optional_for_local_development() -> None:

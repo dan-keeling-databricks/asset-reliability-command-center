@@ -11,7 +11,7 @@ from backend.gateway import GatewayAsk, GatewayElicitation
 from backend.identity import OboIdentityRegistry
 from backend.lakebase_repository import ApprovalReplayClaim
 from backend.model_client import ModelResult, ModelTurn
-from backend.models import IncidentDetail, PendingApproval
+from backend.models import IncidentDetail, PendingApproval, RuntimeAction
 from backend.production_runtime import (
     AgentGraphState,
     ProductionCommandCenterRuntime,
@@ -31,6 +31,21 @@ def test_settings_default_to_one_sonnet_endpoint() -> None:
 
     assert settings.model_endpoint == "databricks-claude-sonnet-4-5"
     assert settings.global_agent_concurrency == 20
+
+
+def test_runtime_action_normalises_workspace_host_without_a_scheme() -> None:
+    action = RuntimeAction(
+        label="Open MLflow trace",
+        kind="link",
+        href=(
+            "adb-7405617409436848.8.azuredatabricks.net/ml/experiments/123/traces/abc"
+        ),
+    )
+
+    assert action.href == (
+        "https://adb-7405617409436848.8.azuredatabricks.net/"
+        "ml/experiments/123/traces/abc"
+    )
 
 
 @pytest.mark.asyncio

@@ -98,7 +98,7 @@ def agent_observability(settings: Settings) -> AgentObservability:
         experiment_url=experiment_url,
         # The experiment is the verified stable entry point for its Traces view. A more
         # specific URL is returned only after a persisted trace ID has been read back.
-        traces_url=experiment_url,
+        traces_url=f"{experiment_url}/traces" if experiment_url else None,
         status="configured" if configured else "unavailable",
         detail=(
             "Open the managed experiment and select Traces to inspect runtime execution."
