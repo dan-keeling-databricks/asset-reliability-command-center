@@ -1,8 +1,9 @@
-"""Production autonomous-agent orchestration for Lakebase and Unity Gateway.
+"""Production LangGraph agent orchestration for Lakebase and Unity Gateway.
 
-Each incident runs in its own asyncio task. The loop loads the governed Skill, discovers tools
-on one configured MCP service, lets the model select calls, records every observed event, and
-stops immediately when Gateway returns ``ASK``. Approval replay uses the exact persisted request.
+Each incident runs in its own asyncio task. An explicit graph loads the governed Skill,
+discovers tools on one configured MCP service, lets the model select calls, records every
+observed event, and stops immediately when Gateway returns ``ASK``. The graph has no durable
+in-memory checkpoint: Lakebase remains canonical for approval state and exact-request replay.
 """
 
 from __future__ import annotations
@@ -14,8 +15,12 @@ import re
 from collections import defaultdict
 from collections.abc import Coroutine
 from datetime import datetime
-from typing import Any
+from typing import Any, TypedDict
 from uuid import uuid4
+
+import mlflow
+from langgraph.graph import END, START, StateGraph
+from mlflow.entities import SpanType
 
 from backend.gateway import GatewayAsk, GovernedGatewayClient
 from backend.identity import OboIdentity, OboIdentityRegistry
@@ -36,8 +41,34 @@ MCP_ACTIVITY_ACTOR = "asset_reliability_mcp"
 INTERNAL_RUN_CONTEXT = "_run_context"
 
 
+class AgentGraphState(TypedDict, total=False):
+    """Ephemeral state for one incident investigation.
+
+    Identity and its OBO token exist only while the graph is executing. They are deliberately
+    excluded from Lakebase and from a LangGraph checkpointer; durable approval recovery uses the
+    pending request already persisted by the repository.
+    """
+
+    incident_id: str
+    sandbox_id: str
+    entrypoint: str
+    incident: IncidentDetail
+    messages: list[dict[str, Any]]
+    available: dict[str, dict[str, Any]]
+    openai_tools: list[dict[str, Any]]
+    tool_calls: list[dict[str, Any]]
+    last_risk: dict[str, Any] | None
+    action_continuation_requested: bool
+    model_summary: str
+    terminal_response: str | None
+    pending_approval: PendingApproval
+    approving_subject: str
+    replay_completed: bool
+    phase: str
+
+
 class ProductionCommandCenterRuntime:
-    """Concurrent code-defined agent runtime over canonical Lakebase state."""
+    """Concurrent LangGraph agent runtime over canonical Lakebase state."""
 
     def __init__(
         self,
@@ -63,8 +94,11 @@ class ProductionCommandCenterRuntime:
         self._user_identities = OboIdentityRegistry()
         self._evaluator_task: asyncio.Task[None] | None = None
         self._run_tasks: dict[asyncio.Task[None], str] = {}
+        self._agent_identities: dict[str, OboIdentity] = {}
+        self._agent_run_contexts: dict[str, str] = {}
         self._sandbox_locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._global_agent_limit = asyncio.Semaphore(settings.global_agent_concurrency)
+        self._agent_graph = self._build_agent_graph()
 
     async def start(self) -> None:
         await self.repository.start()
@@ -153,10 +187,33 @@ class ProductionCommandCenterRuntime:
             approving_subject = (
                 identity.subject if identity and identity.subject else None
             ) or "authenticated-operator"
-            completed = await self._retry_pending(
-                incident_id, incident.pending_approval, approving_subject, sandbox_id
-            )
-            if not completed:
+            graph = getattr(self, "_agent_graph", None) or self._build_agent_graph()
+            self._agent_graph = graph
+            with mlflow.start_span(
+                name="asset_reliability_approval_resume", span_type=SpanType.CHAIN
+            ) as span:
+                span.set_inputs({"incident_id": incident_id, "sandbox_id": sandbox_id})
+                span.set_attribute("asset.incident_id", incident_id)
+                if pump_id := getattr(incident, "asset_id", None):
+                    span.set_attribute("asset.pump_id", pump_id)
+                mlflow.update_current_trace(session_id=sandbox_id)
+                final_state = await graph.ainvoke(
+                    {
+                        "entrypoint": "approval",
+                        "incident_id": incident_id,
+                        "sandbox_id": sandbox_id,
+                        "pending_approval": incident.pending_approval,
+                        "approving_subject": approving_subject,
+                    },
+                    config={"recursion_limit": 100},
+                )
+                if final_state.get("replay_completed"):
+                    span.set_attribute("asset.outcome", "work_order_created")
+                span.set_outputs({"phase": final_state.get("phase", "unknown")})
+            trace_id = mlflow.get_last_active_trace_id()
+            if trace_id:
+                await self._record_trace_link(incident_id, trace_id)
+            if not final_state.get("replay_completed"):
                 raise ValueError("Unity Gateway approval is still pending")
 
     async def follow_up(self, incident_id: str, message: str, sandbox_id: str) -> None:
@@ -247,311 +304,35 @@ class ProductionCommandCenterRuntime:
             await self._run_agent_inner(incident_id, sandbox_id)
 
     async def _run_agent_inner(self, incident_id: str, sandbox_id: str) -> None:
-        """Run the Skill-guided, dynamically tooled loop until pause or terminal state."""
+        """Run one traced graph invocation until a durable pause or terminal state."""
 
         run_started_at = utc_now()
         try:
-            incident = await self.repository.incident(incident_id, sandbox_id)
-            if not incident:
-                return
-            identity = await self._wait_for_identity(incident.scenario_id)
-            if not identity:
-                raise RuntimeError("No in-memory OBO identity is available for this scenario")
-            run_context = await self.repository.create_run_context(incident_id, sandbox_id)
-
-            if not self.skill_gateway or not self.settings.governed_skill_tool:
-                raise RuntimeError("Governed Skill Gateway configuration is missing")
-            skill_started_at = utc_now()
-            skill_response = await self.skill_gateway.call_tool(
-                self.settings.governed_skill_tool, {}, identity.token
-            )
-            skill_completed_at = utc_now()
-            skill_data = _structured(skill_response)
-            skill_instructions = str(skill_data.get("result") or json.dumps(skill_data))
-            await self.repository.append_activity(
-                incident_id,
-                RuntimeActivity(
-                    category="skill",
-                    title=self.settings.governed_skill_tool,
-                    actor=self.settings.governed_skill_tool,
-                    status="complete",
-                    status_label="Loaded",
-                    summary="Loaded the governed response procedure",
-                    action=(
-                        RuntimeAction(
-                            label="Read Standard Operating Procedure",
-                            kind="link",
-                            href=getattr(
-                                self.settings, "governed_skill_document_url", None
-                            ),
-                        )
-                        if getattr(self.settings, "governed_skill_document_url", None)
-                        else None
-                    ),
-                    started_at=skill_started_at,
-                    completed_at=skill_completed_at,
-                ),
-            )
-            discovery_started_at = utc_now()
-            tools = await self.gateway.list_tools(identity.token)
-            discovery_completed_at = utc_now()
-            available = {tool["name"]: tool for tool in tools}
-            await self.repository.append_activity(
-                incident_id,
-                RuntimeActivity(
-                    category="mcp",
-                    title="Discover governed maintenance capabilities",
-                    actor=MCP_ACTIVITY_ACTOR,
-                    status="complete",
-                    status_label="Connected",
-                    summary=f"Unity Gateway exposed {len(available)} governed tools at runtime.",
-                    details=[ActivityDatum(label="Available", value="\n".join(sorted(available)))],
-                    started_at=discovery_started_at,
-                    completed_at=discovery_completed_at,
-                ),
-            )
-            openai_tools = [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": tool["name"],
-                        "description": tool.get("description", ""),
-                        "parameters": _model_visible_schema(
-                            tool.get("inputSchema", {"type": "object"})
-                        ),
-                    },
-                }
-                for tool in tools
-            ]
-            messages: list[dict[str, Any]] = [
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a code-defined asset reliability agent. Follow the governed "
-                        "Skill below. Choose tools from the capabilities discovered at runtime; "
-                        "do not assume a fixed sequence or call count. Never claim an action ran "
-                        "when a tool was blocked. OUTPUT PROTOCOL IS STRICT: whenever you select "
-                        "tools, assistant content must be prospective and exactly `Decision "
-                        "rationale: I will call [tool name] because [evidence-based reason].` "
-                        "For multiple calls, name them in the same prospective sentence. Never "
-                        "claim a call ran, returned, completed, or produced evidence before it "
-                        "executes. A terminal response must "
-                        "contain exactly four Markdown bullets, in this exact order and with no "
-                        "other prose: `- **Finding:** ...`, `- **Evidence:** ...`, "
-                        "`- **Risk:** ...`, `- **Action:** ...`.\n\n"
-                        f"GOVERNED SKILL:\n{skill_instructions}"
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": (
-                        f"Autonomous alert for {incident.asset_id}: {incident.condition}. "
-                        "Assess failure risk before the next maintenance window and pursue the "
-                        "governed response warranted by the evidence. The incident id is "
-                        f"{incident_id}."
-                    ),
-                },
-            ]
-            endpoint = self.settings.model_endpoint
-            last_risk: dict[str, Any] | None = None
-            action_continuation_requested = False
-            while True:
-                turn_started_at = utc_now()
-                turn = await self.model.turn(endpoint, messages, tools=openai_tools)
-                turn_completed_at = utc_now()
-                tool_calls = turn.message.get("tool_calls", [])
-                summary = str(turn.message.get("content") or "")
-                input_tokens = turn.input_tokens
-                output_tokens = turn.output_tokens
-                tool_names = [call["function"]["name"] for call in tool_calls]
-                canonical_rationale = (
-                    _canonical_decision_rationale(summary, tool_names) if tool_calls else None
+            graph = getattr(self, "_agent_graph", None) or self._build_agent_graph()
+            self._agent_graph = graph
+            with mlflow.start_span(
+                name="asset_reliability_agent", span_type=SpanType.CHAIN
+            ) as span:
+                span.set_inputs({"incident_id": incident_id, "sandbox_id": sandbox_id})
+                span.set_attribute("asset.incident_id", incident_id)
+                mlflow.update_current_trace(session_id=sandbox_id)
+                final_state = await graph.ainvoke(
+                    {"incident_id": incident_id, "sandbox_id": sandbox_id},
+                    config={"recursion_limit": 100},
                 )
-                if tool_calls and not canonical_rationale:
-                    try:
-                        rationale = await self.model.turn(
-                            endpoint,
-                            [
-                                {
-                                    "role": "system",
-                                    "content": (
-                                        "Return one prospective sentence exactly beginning "
-                                        f"`{_rationale_prefix(tool_names)}` followed by the "
-                                        "evidence-based reason. Do not claim any call already ran, "
-                                        "returned, completed, or produced a result."
-                                    ),
-                                },
-                                {
-                                    "role": "user",
-                                    "content": (
-                                        "Explain the evidence-based reason for the selected "
-                                        "governed tool call(s). Selected calls: "
-                                        f"{json.dumps(tool_calls)}. Recent context: "
-                                        f"{json.dumps(messages[-3:])}"
-                                    ),
-                                },
-                            ],
-                        )
-                        summary = str(rationale.message.get("content") or "")
-                        input_tokens += rationale.input_tokens
-                        output_tokens += rationale.output_tokens
-                        turn_completed_at = utc_now()
-                        canonical_rationale = _canonical_decision_rationale(summary, tool_names)
-                    except Exception:  # Rationale formatting must never fail the agent run.
-                        canonical_rationale = None
-                    if not canonical_rationale:
-                        canonical_rationale = _fallback_decision_rationale(tool_names)
-                if canonical_rationale:
-                    summary = canonical_rationale
-                canonical_terminal = (
-                    _canonical_terminal_response(summary)
-                    if not tool_calls and last_risk and last_risk.get("risk_band") != "high"
-                    else None
-                )
-                await self.repository.append_activity(
-                    incident_id,
-                    RuntimeActivity(
-                        category="model_call",
-                        title="Model execution",
-                        actor=endpoint,
-                        status="complete",
-                        status_label="Completed",
-                        summary=canonical_terminal or summary,
-                        details=[
-                            ActivityDatum(label="Input tokens", value=str(input_tokens)),
-                            ActivityDatum(label="Output tokens", value=str(output_tokens)),
-                            ActivityDatum(
-                                label="Purpose",
-                                value=(
-                                    "Agent reasoning and tool selection"
-                                    if tool_calls
-                                    else "Final incident response"
-                                ),
-                            ),
-                            ActivityDatum(
-                                label="Estimated cost",
-                                value=f"{self._model_cost(input_tokens, output_tokens):.8f}",
-                            ),
-                        ]
-                        + (
-                            [ActivityDatum(label="Model output", value=summary)]
-                            if tool_calls
-                            else []
-                        ),
-                        started_at=turn_started_at,
-                        completed_at=turn_completed_at,
-                    ),
-                    tokens=(
-                        input_tokens,
-                        output_tokens,
-                        self._model_cost(input_tokens, output_tokens),
-                    ),
-                )
-                messages.append(turn.message)
-                if not tool_calls:
-                    if (
-                        last_risk
-                        and last_risk.get("risk_band") == "high"
-                        and not action_continuation_requested
-                    ):
-                        action_continuation_requested = True
-                        messages.append(
-                            {
-                                "role": "user",
-                                "content": (
-                                    "High risk is established, but no governed action has been "
-                                    "attempted. Continue the Skill workflow by invoking the "
-                                    "available governed action warranted by the evidence. Do not "
-                                    "predict the policy decision; let Unity Gateway decide."
-                                ),
-                            }
-                        )
-                        continue
-                    if last_risk and last_risk.get("risk_band") != "high":
-                        if not canonical_terminal:
-                            await self._ensure_terminal_response(
-                                incident_id, endpoint, messages, summary
-                            )
-                        await self.repository.resolve_no_action(incident_id)
-                        await self.repository.terminate_run_context(incident_id)
-                        return
-                    raise RuntimeError(
-                        "Agent ended without resolving the incident through governed evidence"
-                    )
-
-                for tool_call in tool_calls:
-                    function = tool_call["function"]
-                    tool_name = function["name"]
-                    if tool_name not in available:
-                        raise RuntimeError(f"Model selected unavailable tool: {tool_name}")
-                    raw_arguments = function.get("arguments") or "{}"
-                    arguments = (
-                        json.loads(raw_arguments)
-                        if isinstance(raw_arguments, str)
-                        else raw_arguments
-                    )
-                    if tool_name == "submit_work_order":
-                        arguments = _submit_work_order_arguments(
-                            arguments, incident, last_risk
-                        )
-                    tool_started_at = utc_now()
-                    try:
-                        gateway_arguments = {
-                            **arguments,
-                            INTERNAL_RUN_CONTEXT: run_context,
-                        }
-                        result = await self.gateway.call_tool(
-                            tool_name, gateway_arguments, identity.token
-                        )
-                    except GatewayAsk as ask:
-                        await self._pause_for_gateway(
-                            incident_id,
-                            tool_name,
-                            ask,
-                            started_at=tool_started_at,
-                            incident=incident,
-                            arguments=arguments,
-                            risk=last_risk,
-                        )
-                        return
-                    tool_completed_at = utc_now()
-                    data = _structured(result)
-                    await self.repository.append_activity(
-                        incident_id,
-                        RuntimeActivity(
-                            category="tool_call",
-                            title=tool_name,
-                            actor=f"Unity Gateway · {tool_name}",
-                            status="complete",
-                            status_label="ALLOW",
-                            summary=_result_summary(data),
-                            details=[
-                                ActivityDatum(label="Decision", value="ALLOW"),
-                                ActivityDatum(label="Execution", value="Executed"),
-                            ],
-                            started_at=tool_started_at,
-                            completed_at=tool_completed_at,
-                        ),
-                        tool_call=True,
-                    )
-                    messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tool_call["id"],
-                            "name": tool_name,
-                            "content": json.dumps(data),
-                        }
-                    )
-                    if tool_name == "assess_failure_risk":
-                        last_risk = data
-                    if tool_name == "submit_work_order":
-                        await self._complete_governed_action(
-                            incident_id,
-                            result,
-                            started_at=tool_started_at,
-                            completed_at=tool_completed_at,
-                        )
-                        return
+                if incident := final_state.get("incident"):
+                    span.set_attribute("asset.pump_id", incident.asset_id)
+                outcome = {
+                    "paused": "approval_required",
+                    "completed": "work_order_created",
+                    "no_action": "no_action",
+                }.get(final_state.get("phase"))
+                if outcome:
+                    span.set_attribute("asset.outcome", outcome)
+                span.set_outputs({"phase": final_state.get("phase", "unknown")})
+            trace_id = mlflow.get_last_active_trace_id()
+            if trace_id:
+                await self._record_trace_link(incident_id, trace_id)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001
@@ -569,6 +350,457 @@ class ProductionCommandCenterRuntime:
             )
             await self.repository.fail_incident(incident_id, str(exc))
             await self.repository.terminate_run_context(incident_id)
+        finally:
+            getattr(self, "_agent_identities", {}).pop(incident_id, None)
+            getattr(self, "_agent_run_contexts", {}).pop(incident_id, None)
+
+    def _build_agent_graph(self):
+        """Compile the explicit investigation graph without a process-local checkpointer."""
+
+        builder = StateGraph(AgentGraphState)
+        builder.add_node("load_context", self._load_context_node)
+        builder.add_node("load_skill", self._load_skill_node)
+        builder.add_node("discover_tools", self._discover_tools_node)
+        builder.add_node("invoke_model", self._invoke_model_node)
+        builder.add_node("request_governed_action", self._request_governed_action_node)
+        builder.add_node("execute_tools", self._execute_tools_node)
+        builder.add_node("resolve_no_action", self._resolve_no_action_node)
+        builder.add_node("resume_approval", self._resume_approval_node)
+        builder.add_conditional_edges(
+            START,
+            lambda state: state.get("entrypoint", "investigation"),
+            {"investigation": "load_context", "approval": "resume_approval"},
+        )
+        builder.add_conditional_edges(
+            "load_context",
+            lambda state: "missing" if state.get("phase") == "missing" else "ready",
+            {"missing": END, "ready": "load_skill"},
+        )
+        builder.add_edge("load_skill", "discover_tools")
+        builder.add_edge("discover_tools", "invoke_model")
+        builder.add_conditional_edges(
+            "invoke_model",
+            self._route_after_model,
+            {
+                "tools": "execute_tools",
+                "request_action": "request_governed_action",
+                "no_action": "resolve_no_action",
+            },
+        )
+        builder.add_edge("request_governed_action", "invoke_model")
+        builder.add_conditional_edges(
+            "execute_tools",
+            lambda state: state["phase"],
+            {"continue": "invoke_model", "paused": END, "completed": END},
+        )
+        builder.add_edge("resolve_no_action", END)
+        builder.add_edge("resume_approval", END)
+        return builder.compile()
+
+    async def _load_context_node(self, state: AgentGraphState) -> AgentGraphState:
+        incident_id = state["incident_id"]
+        sandbox_id = state["sandbox_id"]
+        incident = await self.repository.incident(incident_id, sandbox_id)
+        if not incident:
+            return {"phase": "missing"}
+        identity = await self._wait_for_identity(incident.scenario_id)
+        if not identity:
+            raise RuntimeError("No in-memory OBO identity is available for this scenario")
+        run_context = await self.repository.create_run_context(incident_id, sandbox_id)
+        identities = getattr(self, "_agent_identities", None)
+        if identities is None:
+            identities = self._agent_identities = {}
+        run_contexts = getattr(self, "_agent_run_contexts", None)
+        if run_contexts is None:
+            run_contexts = self._agent_run_contexts = {}
+        identities[incident_id] = identity
+        run_contexts[incident_id] = run_context
+        return {
+            "incident": incident,
+            "last_risk": None,
+            "action_continuation_requested": False,
+            "phase": "ready",
+        }
+
+    async def _load_skill_node(self, state: AgentGraphState) -> AgentGraphState:
+        if not self.skill_gateway or not self.settings.governed_skill_tool:
+            raise RuntimeError("Governed Skill Gateway configuration is missing")
+        started_at = utc_now()
+        response = await self.skill_gateway.call_tool(
+            self.settings.governed_skill_tool, {}, self._graph_identity(state).token
+        )
+        completed_at = utc_now()
+        skill_data = _structured(response)
+        skill_instructions = str(skill_data.get("result") or json.dumps(skill_data))
+        await self.repository.append_activity(
+            state["incident_id"],
+            RuntimeActivity(
+                category="skill",
+                title=self.settings.governed_skill_tool,
+                actor=self.settings.governed_skill_tool,
+                status="complete",
+                status_label="Loaded",
+                summary="Loaded the governed response procedure",
+                action=(
+                    RuntimeAction(
+                        label="Read Standard Operating Procedure",
+                        kind="link",
+                        href=getattr(self.settings, "governed_skill_document_url", None),
+                    )
+                    if getattr(self.settings, "governed_skill_document_url", None)
+                    else None
+                ),
+                started_at=started_at,
+                completed_at=completed_at,
+            ),
+        )
+        incident = state["incident"]
+        return {
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a LangGraph asset reliability agent. Follow the governed Skill "
+                        "below. Choose tools from the capabilities discovered at runtime; do not "
+                        "assume a fixed sequence or call count. Never claim an action ran when a "
+                        "tool was blocked. OUTPUT PROTOCOL IS STRICT: whenever you select tools, "
+                        "assistant content must be prospective and exactly `Decision rationale: "
+                        "I will call [tool name] because [evidence-based reason].` For multiple "
+                        "calls, name them in the same prospective sentence. Never claim a call "
+                        "ran, returned, completed, or produced evidence before it executes. A "
+                        "terminal response must contain exactly four Markdown bullets, in this "
+                        "exact order and with no other prose: `- **Finding:** ...`, "
+                        "`- **Evidence:** ...`, `- **Risk:** ...`, `- **Action:** ...`.\n\n"
+                        f"GOVERNED SKILL:\n{skill_instructions}"
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Autonomous alert for {incident.asset_id}: {incident.condition}. "
+                        "Assess failure risk before the next maintenance window and pursue the "
+                        "governed response warranted by the evidence. The incident id is "
+                        f"{state['incident_id']}."
+                    ),
+                },
+            ]
+        }
+
+    async def _discover_tools_node(self, state: AgentGraphState) -> AgentGraphState:
+        started_at = utc_now()
+        tools = await self.gateway.list_tools(self._graph_identity(state).token)
+        completed_at = utc_now()
+        available = {tool["name"]: tool for tool in tools}
+        await self.repository.append_activity(
+            state["incident_id"],
+            RuntimeActivity(
+                category="mcp",
+                title="Discover governed maintenance capabilities",
+                actor=MCP_ACTIVITY_ACTOR,
+                status="complete",
+                status_label="Connected",
+                summary=f"Unity Gateway exposed {len(available)} governed tools at runtime.",
+                details=[ActivityDatum(label="Available", value="\n".join(sorted(available)))],
+                started_at=started_at,
+                completed_at=completed_at,
+            ),
+        )
+        return {
+            "available": available,
+            "openai_tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": tool["name"],
+                        "description": tool.get("description", ""),
+                        "parameters": _model_visible_schema(
+                            tool.get("inputSchema", {"type": "object"})
+                        ),
+                    },
+                }
+                for tool in tools
+            ],
+        }
+
+    async def _invoke_model_node(self, state: AgentGraphState) -> AgentGraphState:
+        endpoint = self.settings.model_endpoint
+        messages = [*state["messages"]]
+        started_at = utc_now()
+        turn = await self.model.turn(endpoint, messages, tools=state["openai_tools"])
+        completed_at = utc_now()
+        tool_calls = turn.message.get("tool_calls", [])
+        summary = str(turn.message.get("content") or "")
+        input_tokens = turn.input_tokens
+        output_tokens = turn.output_tokens
+        tool_names = [call["function"]["name"] for call in tool_calls]
+        canonical_rationale = (
+            _canonical_decision_rationale(summary, tool_names) if tool_calls else None
+        )
+        if tool_calls and not canonical_rationale:
+            try:
+                rationale = await self.model.turn(
+                    endpoint,
+                    [
+                        {
+                            "role": "system",
+                            "content": (
+                                "Return one prospective sentence exactly beginning "
+                                f"`{_rationale_prefix(tool_names)}` followed by the "
+                                "evidence-based reason. Do not claim any call already ran, "
+                                "returned, completed, or produced a result."
+                            ),
+                        },
+                        {
+                            "role": "user",
+                            "content": (
+                                "Explain the evidence-based reason for the selected governed "
+                                f"tool call(s). Selected calls: {json.dumps(tool_calls)}. Recent "
+                                f"context: {json.dumps(messages[-3:])}"
+                            ),
+                        },
+                    ],
+                )
+                summary = str(rationale.message.get("content") or "")
+                input_tokens += rationale.input_tokens
+                output_tokens += rationale.output_tokens
+                completed_at = utc_now()
+                canonical_rationale = _canonical_decision_rationale(summary, tool_names)
+            except Exception:  # Rationale formatting must never fail the agent run.
+                canonical_rationale = None
+            if not canonical_rationale:
+                canonical_rationale = _fallback_decision_rationale(tool_names)
+        if canonical_rationale:
+            summary = canonical_rationale
+        last_risk = state.get("last_risk")
+        canonical_terminal = (
+            _canonical_terminal_response(summary)
+            if not tool_calls and last_risk and last_risk.get("risk_band") != "high"
+            else None
+        )
+        await self.repository.append_activity(
+            state["incident_id"],
+            RuntimeActivity(
+                category="model_call",
+                title="Model execution",
+                actor=endpoint,
+                status="complete",
+                status_label="Completed",
+                summary=canonical_terminal or summary,
+                details=[
+                    ActivityDatum(label="Input tokens", value=str(input_tokens)),
+                    ActivityDatum(label="Output tokens", value=str(output_tokens)),
+                    ActivityDatum(
+                        label="Purpose",
+                        value=(
+                            "Agent reasoning and tool selection"
+                            if tool_calls
+                            else "Final incident response"
+                        ),
+                    ),
+                    ActivityDatum(
+                        label="Estimated cost",
+                        value=f"{self._model_cost(input_tokens, output_tokens):.8f}",
+                    ),
+                ]
+                + (
+                    [ActivityDatum(label="Model output", value=summary)] if tool_calls else []
+                ),
+                started_at=started_at,
+                completed_at=completed_at,
+            ),
+            tokens=(
+                input_tokens,
+                output_tokens,
+                self._model_cost(input_tokens, output_tokens),
+            ),
+        )
+        messages.append(turn.message)
+        return {
+            "messages": messages,
+            "tool_calls": tool_calls,
+            "model_summary": summary,
+            "terminal_response": canonical_terminal,
+        }
+
+    @staticmethod
+    def _route_after_model(state: AgentGraphState) -> str:
+        if state["tool_calls"]:
+            return "tools"
+        last_risk = state.get("last_risk")
+        if (
+            last_risk
+            and last_risk.get("risk_band") == "high"
+            and not state.get("action_continuation_requested", False)
+        ):
+            return "request_action"
+        if last_risk and last_risk.get("risk_band") != "high":
+            return "no_action"
+        raise RuntimeError("Agent ended without resolving the incident through governed evidence")
+
+    async def _request_governed_action_node(
+        self, state: AgentGraphState
+    ) -> AgentGraphState:
+        return {
+            "messages": [
+                *state["messages"],
+                {
+                    "role": "user",
+                    "content": (
+                        "High risk is established, but no governed action has been attempted. "
+                        "Continue the Skill workflow by invoking the available governed action "
+                        "warranted by the evidence. Do not predict the policy decision; let "
+                        "Unity Gateway decide."
+                    ),
+                },
+            ],
+            "action_continuation_requested": True,
+        }
+
+    async def _execute_tools_node(self, state: AgentGraphState) -> AgentGraphState:
+        messages = [*state["messages"]]
+        last_risk = state.get("last_risk")
+        for tool_call in state["tool_calls"]:
+            function = tool_call["function"]
+            tool_name = function["name"]
+            if tool_name not in state["available"]:
+                raise RuntimeError(f"Model selected unavailable tool: {tool_name}")
+            raw_arguments = function.get("arguments") or "{}"
+            arguments = (
+                json.loads(raw_arguments) if isinstance(raw_arguments, str) else raw_arguments
+            )
+            if tool_name == "submit_work_order":
+                arguments = _submit_work_order_arguments(
+                    arguments, state["incident"], last_risk
+                )
+            started_at = utc_now()
+            try:
+                result = await self.gateway.call_tool(
+                    tool_name,
+                    {
+                        **arguments,
+                        INTERNAL_RUN_CONTEXT: self._graph_run_context(state),
+                    },
+                    self._graph_identity(state).token,
+                )
+            except GatewayAsk as ask:
+                await self._pause_for_gateway(
+                    state["incident_id"],
+                    tool_name,
+                    ask,
+                    started_at=started_at,
+                    incident=state["incident"],
+                    arguments=arguments,
+                    risk=last_risk,
+                )
+                return {"messages": messages, "last_risk": last_risk, "phase": "paused"}
+            completed_at = utc_now()
+            data = _structured(result)
+            await self.repository.append_activity(
+                state["incident_id"],
+                RuntimeActivity(
+                    category="tool_call",
+                    title=tool_name,
+                    actor=f"Unity Gateway · {tool_name}",
+                    status="complete",
+                    status_label="ALLOW",
+                    summary=_result_summary(data),
+                    details=[
+                        ActivityDatum(label="Decision", value="ALLOW"),
+                        ActivityDatum(label="Execution", value="Executed"),
+                    ],
+                    started_at=started_at,
+                    completed_at=completed_at,
+                ),
+                tool_call=True,
+            )
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tool_call["id"],
+                    "name": tool_name,
+                    "content": json.dumps(data),
+                }
+            )
+            if tool_name == "assess_failure_risk":
+                last_risk = data
+            if tool_name == "submit_work_order":
+                await self._complete_governed_action(
+                    state["incident_id"],
+                    result,
+                    started_at=started_at,
+                    completed_at=completed_at,
+                )
+                return {"messages": messages, "last_risk": last_risk, "phase": "completed"}
+        return {"messages": messages, "last_risk": last_risk, "phase": "continue"}
+
+    def _graph_identity(self, state: AgentGraphState) -> OboIdentity:
+        """Resolve an OBO identity held outside traceable graph state."""
+
+        identity = getattr(self, "_agent_identities", {}).get(state["incident_id"])
+        if not identity:
+            raise RuntimeError("The in-memory OBO identity expired during agent execution")
+        return identity
+
+    def _graph_run_context(self, state: AgentGraphState) -> str:
+        """Resolve an opaque Gateway capability held outside traceable graph state."""
+
+        run_context = getattr(self, "_agent_run_contexts", {}).get(state["incident_id"])
+        if not run_context:
+            raise RuntimeError("The in-memory Gateway run context expired during agent execution")
+        return run_context
+
+    async def _resolve_no_action_node(self, state: AgentGraphState) -> AgentGraphState:
+        if not state.get("terminal_response"):
+            await self._ensure_terminal_response(
+                state["incident_id"],
+                self.settings.model_endpoint,
+                state["messages"],
+                state["model_summary"],
+            )
+        await self.repository.resolve_no_action(state["incident_id"])
+        await self.repository.terminate_run_context(state["incident_id"])
+        return {"phase": "no_action"}
+
+    async def _resume_approval_node(self, state: AgentGraphState) -> AgentGraphState:
+        """Resume from Lakebase and replay only the exact claimed Gateway request."""
+
+        completed = await self._retry_pending(
+            state["incident_id"],
+            state["pending_approval"],
+            state["approving_subject"],
+            state["sandbox_id"],
+        )
+        return {
+            "replay_completed": completed,
+            "phase": "completed" if completed else "paused",
+        }
+
+    async def _record_trace_link(self, incident_id: str, trace_id: str) -> None:
+        """Expose a real trace link when host and experiment identity are configured."""
+
+        experiment_id = getattr(self.settings, "mlflow_experiment_id", None)
+        host = str(getattr(self.settings, "databricks_host", "") or "").rstrip("/")
+        if not experiment_id or not host:
+            return
+        browser_trace_id = trace_id.rsplit("/", 1)[-1]
+        now = utc_now()
+        await self.repository.append_activity(
+            incident_id,
+            RuntimeActivity(
+                category="trace",
+                title="MLflow trace",
+                status="complete",
+                status_label="Recorded",
+                summary="LangGraph execution was recorded in MLflow.",
+                action=RuntimeAction(
+                    label="Open MLflow trace",
+                    kind="link",
+                    href=f"{host}/ml/experiments/{experiment_id}/traces/{browser_trace_id}",
+                ),
+                started_at=now,
+                completed_at=now,
+            ),
+        )
 
     async def _wait_for_identity(self, scenario_id: str) -> OboIdentity | None:
         """Allow a local hot reload's next dashboard poll to restore process-local OBO state."""
