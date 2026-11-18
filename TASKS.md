@@ -25,6 +25,7 @@ existing `classic_stable_realtime_demos_catalog` and dedicated
 | App | Personal live fleet, alerting, autonomous activity, history and incident timeline | Complete |
 | App | End-to-end health from connectivity, Rate RTM, telemetry and evaluator freshness | Complete |
 | Deployment | Customer-portable bundle, generated App manifest and checked lifecycle entry point | Complete |
+| Deployment | Customer clean-install validation, Lakebase resource-ID guidance and frontend audit gate | In validation |
 | Documentation | Architecture, demo, deployment, debt, and evidence plan reconciled | Complete |
 
 ## Validation state
@@ -34,6 +35,7 @@ The integrated repository must pass this gate before deployment:
 ```bash
 uv run ruff check backend tests src scripts
 uv run pytest
+npm --prefix frontend audit --audit-level=high
 npm --prefix frontend run typecheck
 npm --prefix frontend run build
 databricks bundle validate --strict --target dev --profile fe_vm_rtm <explicit --var values>

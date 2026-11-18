@@ -24,10 +24,12 @@ app:
 
 lakebase:
   project_id: <lakebase-project-id>
-  branch: <lakebase-branch>
-  database: <lakebase-database>
-  database_resource_name: <lakebase-database-resource-name>
-  endpoint_name: <lakebase-endpoint-name>
+  # Defaults created with a new Lakebase Autoscaling project. For a reused project, discover
+  # these independently with the postgres list commands in docs/CUSTOMER_DEPLOYMENT.md.
+  branch: production
+  database: databricks_postgres
+  database_resource_name: databricks-postgres
+  endpoint_name: primary
   operational_schema: <lakebase-operational-schema>
 
 personal_sandboxes:

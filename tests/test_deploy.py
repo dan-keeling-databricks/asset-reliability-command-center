@@ -266,6 +266,17 @@ def test_app_deployment_gate_runs_frontend_behavioural_tests() -> None:
     assert '["npm", "--prefix", "frontend", "run", "test:unit"]' in deploy_source
 
 
+def test_app_deployment_gate_rejects_high_severity_frontend_advisories() -> None:
+    """Prevent a clean install from accepting a vulnerable locked frontend toolchain."""
+
+    deploy_source = (Path(__file__).resolve().parents[1] / "scripts/deploy.py").read_text()
+
+    assert (
+        '["npm", "--prefix", "frontend", "audit", "--audit-level=high"]'
+        in deploy_source
+    )
+
+
 def _write_minimal_runtime(root: Path) -> None:
     """Create only the files that a deployed FastAPI/React App reads at runtime."""
 

@@ -63,6 +63,10 @@ Important choices:
 - Use a dedicated project schema and Lakebase operational schema.
 - Supply the Lakebase project, branch, database, database resource and endpoint names; the
   installer derives the full workspace resource paths.
+- Keep the PostgreSQL database name separate from its Lakebase resource ID. A new project creates
+  PostgreSQL database `databricks_postgres` under database resource ID
+  `databricks-postgres`; using the underscore form for both makes App creation fail with
+  `404 NOT_FOUND`.
 - Select an App name of 26 characters or fewer using lowercase letters, numbers and hyphens.
 - Use an existing App access group; the installer does not create people or groups.
 - Size `sandbox_capacity` for concurrent authenticated users. The default design uses one shared
@@ -112,6 +116,40 @@ databricks groups list \
   -o json
 ```
 
+Discover an enabled classic node rather than copying an instance type from another cloud,
+subscription or region. A node can appear in `list-node-types` while its
+`node_info.status` says `NotEnabledOnSubscription`:
+
+```bash
+databricks clusters list-node-types \
+  --profile <customer-profile> \
+  -o json |
+  jq '[.node_types[]
+    | select((.node_info.status // []) | length == 0)
+    | select(.num_cores >= 4 and .memory_mb >= 16384 and .num_gpus == 0)
+    | {node_type_id, category, num_cores, memory_mb}]'
+```
+
+For a new Lakebase project, use the defaults shown in the customer worksheet:
+`production`, `primary`, PostgreSQL database `databricks_postgres`, and database resource ID
+`databricks-postgres`. For a reused project, discover each value from the API instead of
+inferring one from another:
+
+```bash
+databricks postgres list-branches projects/<lakebase-project-id> \
+  --profile <customer-profile> -o json
+databricks postgres list-endpoints \
+  projects/<lakebase-project-id>/branches/<lakebase-branch> \
+  --profile <customer-profile> -o json
+databricks postgres list-databases \
+  projects/<lakebase-project-id>/branches/<lakebase-branch> \
+  --profile <customer-profile> -o json
+```
+
+In the database output, pass `status.postgres_database` to
+`--lakebase-database` and `database_id` to
+`--lakebase-database-resource-name`.
+
 The checked preflight remains the final authority: it compares the profile host, resolves the App
 identity, validates dependencies and stops before mutation.
 
@@ -148,6 +186,11 @@ Installation reconciles resources in dependency order:
 6. governed Skill, MCP connection/service tools and native-`ASK` policy;
 7. the generated App snapshot and required OBO scopes; and
 8. read-only post-install resource checks.
+
+Allow at least 20–30 minutes for a first Azure installation. The Lakebase migration and
+continuous RTM job each require a cold classic-compute start and can remain silent for several
+minutes while the CLI waits synchronously. Do not launch a replacement run solely because no new
+terminal output has appeared; use the printed run URL if an operator needs independent status.
 
 The synthetic Kafka producer, governed-history pipeline runner and Genie space remain absent from
 the primary target. Genie is not an active App dependency in the default installation.
@@ -325,6 +368,11 @@ operation. It does not weaken freshness or acceptance checks.
 
 - **Profile/host mismatch:** stop. Select the intended named profile or correct `expected_host`;
   never weaken the check.
+- **App creation says the Lakebase database does not exist:** compare the attached database
+  resource path with `postgres list-databases`. The default resource ID is
+  `databricks-postgres`, while the PostgreSQL database name is `databricks_postgres`.
+- **A node is listed but compute never starts:** inspect `node_info.status`; listed node types
+  marked `NotEnabledOnSubscription` are not valid workload choices.
 - **App principal mismatch:** verify that the App belongs to this target. Do not substitute a
   principal copied from another workspace.
 - **Strict bundle validation fails:** correct the customer values or target permissions. Do not

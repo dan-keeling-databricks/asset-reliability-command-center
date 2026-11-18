@@ -178,6 +178,11 @@ The customer must choose:
 - governed Skill, MCP connection/service and policy-function names; and
 - sandbox capacity, telemetry rate, source partitions and global agent concurrency.
 
+For a newly created Lakebase project, the PostgreSQL database name and database resource ID are
+different: use `databricks_postgres` and `databricks-postgres`, respectively. The customer
+guide includes discovery commands for reused projects and for node types enabled in the target
+subscription.
+
 The App's service principal is resolved from the App created in the target workspace. Do not
 copy a service-principal ID, token or secret from another environment.
 
@@ -241,6 +246,7 @@ target workspace.
 ```bash
 uv run ruff check backend tests src scripts
 uv run pytest
+npm --prefix frontend audit --audit-level=high
 npm --prefix frontend run typecheck
 npm --prefix frontend run build
 uv run python scripts/deploy.py --help
@@ -284,6 +290,7 @@ The complete identifiers, SQL, tool sequence and governance receipt are in
 - [Technical architecture](docs/ARCHITECTURE.md)
 - [Customer installation and lifecycle](docs/CUSTOMER_DEPLOYMENT.md)
 - [Customer configuration worksheet](docs/examples/customer-values.example.yml)
+- [Customer clean-install validation record](docs/CUSTOMER_INSTALL_VALIDATION.md)
 - [Manual deployment and live acceptance](docs/DEPLOYMENT.md)
 - [Technical debt and accepted trade-offs](docs/TECHNICAL_DEBT.md)
 - [Current implementation status](TASKS.md)
