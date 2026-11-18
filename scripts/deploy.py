@@ -820,6 +820,9 @@ def deployment_steps(
             "Create or update the Unity Gateway policy function",
             ["databricks", "bundle", "run", *flags, "setup_unity_governance"],
         ),
+        # The governed MCP source is hosted by this App. Start the verified snapshot before the
+        # governance reconciler performs live tool discovery and the native ASK probe.
+        app_step,
         Step(
             "Reconcile the Skill, MCP source, service, selectors, and ASK policy",
             ["uv", "run", "python", "-m", "scripts.deploy_governance"],
@@ -835,7 +838,6 @@ def deployment_steps(
                 "ASSET_RELIABILITY_UC_AUDIENCE": "account users",
             },
         ),
-        app_step,
     ]
 
 

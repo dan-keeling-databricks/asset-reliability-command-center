@@ -73,14 +73,14 @@ def test_deployment_steps_are_explicit_and_dependency_ordered() -> None:
     assert labels == [
         "Deploy the personal-sandbox Rate data plane in readiness-gated phases",
         "Create or update the Unity Gateway policy function",
-        "Reconcile the Skill, MCP source, service, selectors, and ASK policy",
         "Deploy the App snapshot after Rate telemetry is ready",
+        "Reconcile the Skill, MCP source, service, selectors, and ASK policy",
     ]
     for step in steps:
         if step.command[0] == "databricks":
             assert "--profile" in step.command
             assert "explicit-profile" in step.command
-    assert steps[2].environment == {
+    assert steps[3].environment == {
         "DATABRICKS_CONFIG_PROFILE": "explicit-profile",
         "ASSET_RELIABILITY_CATALOG": "demo_catalog",
         "ASSET_RELIABILITY_SCHEMA": "asset_reliability",
@@ -91,7 +91,7 @@ def test_deployment_steps_are_explicit_and_dependency_ordered() -> None:
         "ASSET_RELIABILITY_POLICY_FUNCTION_NAME": "submit_work_order_policy",
         "ASSET_RELIABILITY_UC_AUDIENCE": "account users",
     }
-    assert steps[2].command == [
+    assert steps[3].command == [
         "uv",
         "run",
         "python",
