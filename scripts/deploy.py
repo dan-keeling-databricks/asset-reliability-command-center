@@ -29,6 +29,8 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from databricks.sdk import WorkspaceClient
+from databricks.sdk.service.iam import GrantRule, RuleSetUpdateRequest
 
 ROOT = Path(__file__).resolve().parents[1]
 BUILD_INFO = ROOT / ".build-info.json"
@@ -528,6 +530,65 @@ def bind_app_identity(inputs: DeploymentInputs, app: dict[str, Any]) -> Deployme
             f"App {inputs.app_name!r} uses service principal {actual!r}, not the explicit input"
         )
     return inputs.with_app_principal(actual)
+
+
+def _service_principal_user_rules(
+    rules: list[GrantRule], principal: str
+) -> tuple[list[GrantRule], bool]:
+    """Add one user to the App principal's user role without replacing other grants."""
+
+    desired_role = "roles/servicePrincipal.user"
+    updated = [
+        GrantRule(role=rule.role, principals=list(rule.principals or [])) for rule in rules
+    ]
+    for rule in updated:
+        if rule.role != desired_role:
+            continue
+        if principal in (rule.principals or []):
+            return updated, False
+        rule.principals = [*(rule.principals or []), principal]
+        return updated, True
+    updated.append(GrantRule(role=desired_role, principals=[principal]))
+    return updated, True
+
+
+def ensure_deployer_can_use_app_principal(
+    inputs: DeploymentInputs, user: dict[str, Any]
+) -> None:
+    """Grant the current deployer only the role required to create App-run-as jobs."""
+
+    client_id = inputs.app_service_principal_client_id
+    username = str(user.get("userName") or "")
+    if not client_id or not username:
+        raise RuntimeError("App principal and deploying username must be resolved before run-as")
+    client = WorkspaceClient(profile=inputs.profile)
+    account_id = str(client.config.account_id or "")
+    if not account_id:
+        raise RuntimeError("Selected Databricks profile does not expose an account ID")
+    name = (
+        f"accounts/{account_id}/servicePrincipals/{client_id}/ruleSets/default"
+    )
+    rule_set = client.account_access_control_proxy.get_rule_set(name, "")
+    rules, changed = _service_principal_user_rules(
+        list(rule_set.grant_rules or []), f"users/{username}"
+    )
+    if changed:
+        client.account_access_control_proxy.update_rule_set(
+            name,
+            RuleSetUpdateRequest(
+                name=name,
+                etag=str(rule_set.etag or ""),
+                grant_rules=rules,
+            ),
+        )
+    verified = client.account_access_control_proxy.get_rule_set(name, "")
+    if not any(
+        rule.role == "roles/servicePrincipal.user"
+        and f"users/{username}" in (rule.principals or [])
+        for rule in verified.grant_rules or []
+    ):
+        raise RuntimeError("Deploying user was not granted App service-principal user role")
+    print("Verified least-privilege App service-principal run-as role", flush=True)
 
 
 def resolve_app_source_path(app: dict[str, Any]) -> str:
@@ -1046,6 +1107,9 @@ def main() -> None:
         print(f"\n==> {bootstrap.label}")
         runner.run(bootstrap.command)
         inputs = bind_app_identity(inputs, fetch_app(runner, inputs))
+
+    if not args.app_only:
+        ensure_deployer_can_use_app_principal(inputs, user)
 
     for step in deployment_steps(
         inputs,

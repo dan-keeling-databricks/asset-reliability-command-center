@@ -9,9 +9,11 @@ from pathlib import Path
 
 import pytest
 import yaml
+from databricks.sdk.service.iam import GrantRule
 
 from scripts.deploy import (
     DeploymentInputs,
+    _service_principal_user_rules,
     assert_app_only_steps,
     assert_frontend_fresh,
     bind_app_identity,
@@ -137,6 +139,35 @@ def test_app_identity_is_discovered_and_optional_expectation_is_verified() -> No
         bind_app_identity(
             inputs(), {"service_principal_client_id": "different-workspace-sp"}
         )
+
+
+def test_service_principal_user_role_preserves_existing_grants() -> None:
+    rules, changed = _service_principal_user_rules(
+        [
+            GrantRule(
+                role="roles/servicePrincipal.manager",
+                principals=["users/operator@example.com"],
+            )
+        ],
+        "users/operator@example.com",
+    )
+
+    assert changed is True
+    assert [rule.as_dict() for rule in rules] == [
+        {
+            "role": "roles/servicePrincipal.manager",
+            "principals": ["users/operator@example.com"],
+        },
+        {
+            "role": "roles/servicePrincipal.user",
+            "principals": ["users/operator@example.com"],
+        },
+    ]
+    unchanged, changed_again = _service_principal_user_rules(
+        rules, "users/operator@example.com"
+    )
+    assert changed_again is False
+    assert [rule.as_dict() for rule in unchanged] == [rule.as_dict() for rule in rules]
 
 
 def test_app_only_deployment_mutates_only_the_app() -> None:
