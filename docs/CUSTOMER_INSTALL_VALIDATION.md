@@ -57,3 +57,61 @@ verify a clean Lakebase target. After the exact deleted demo project was explici
 `get-project` returned `NOT_FOUND`, and the App, Asset Reliability jobs and project schema
 inventories were empty. A successful retry from that state is required before this record can
 declare the guide clean-install validated.
+
+## Attempt 2 — clean install from the revised public guide
+
+**Source:** `562d57fea906d6c8017a8db6c709fdb5df5ffefe`
+
+**Date:** 2026-11-18
+
+**Starting state:** the App, Asset Reliability jobs, project schema, Model Service, MLflow
+experiment, Skill, MCP service and connection, compute policy and bundle files were absent. The
+exact dedicated Lakebase tombstone had been purged and `get-project` returned `NOT_FOUND`.
+
+The repository was cloned afresh from the public remote. The documented preflight passed without
+an undocumented correction: Ruff, 192 Python tests, six frontend behavioural tests, TypeScript,
+Vite build, zero high-severity npm vulnerabilities and strict bundle validation all succeeded.
+
+The documented `install` operation then completed in about 25 minutes using only values discovered
+through the customer worksheet. The two expected quiet intervals were the Lakebase migration and
+Rate RTM classic-compute cold starts; the printed run URLs were sufficient to distinguish these
+waits from a stalled installation. No code, command argument or workspace resource needed an
+out-of-band correction.
+
+### Verified installation evidence
+
+- App deployment `01f1e39f4c3c19cc9cc158b1e20f76a4` reached `SUCCEEDED`; the App and its
+  compute both reached `RUNNING`/`ACTIVE`.
+- The deployed `.build-info.json` reported
+  `562d57fea906d6c8017a8db6c709fdb5df5ffefe`.
+- RTM parent run `149037512533156` and task run `28071639722798` reached `RUNNING`.
+- The live RTM job enables `spark.databricks.streaming.realTimeMode.enabled`, uses fixed classic
+  compute and references the configured Lakebase endpoint and Unity Catalog Volume. Its deployed
+  notebook was byte-for-byte identical to the selected commit; that source uses Spark Rate, the
+  native `postgresql` streaming sink and a Volume checkpoint.
+- The governed Skill was created and has a non-empty `finalize_time`.
+- The live MCP service discovered exactly `get_asset_telemetry`, `assess_failure_risk`,
+  `prepare_work_order` and `submit_work_order`; its source-context guard rejected a context-free
+  call.
+- The service policy referenced the live Unity Catalog function. The non-executing probe returned
+  native `ASK` for `submit_work_order` and did not create a work order.
+- MLflow experiment `3568841711763529`, its four managed Unity Catalog OpenTelemetry tables and
+  the two trace views were present. All four tables contained zero rows before any user exercised
+  the fresh App, so no trace is represented as evidence prematurely.
+- App startup logs contained no runtime error. They retained the documented warnings about
+  unused packages preinstalled in the Databricks Apps base image; Uvicorn started and live MCP
+  proxy requests returned HTTP 200.
+
+The App correctly returned HTTP 401 to an unauthenticated health request. Authenticated
+`/api/build-info`, `/api/health`, two-user isolation and the P-202/P-207/P-204 business journey
+remain live-acceptance activities: they require an admitted user session and are not silently
+replaced with a shell token or fabricated output. Browser/computer-use automation was explicitly
+out of scope for this validation. Control-plane evidence independently proved the selected build,
+running App, running RTM, deployed source, governance assets and trace storage.
+
+### Result
+
+The revised public instructions now produce a clean customer installation from an empty target
+without undocumented corrections. The installation guide is therefore clean-install validated.
+This result proves reproducible installation; it does not replace the separate authenticated
+business-journey acceptance checklist in `docs/DEPLOYMENT.md`.

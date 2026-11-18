@@ -25,7 +25,7 @@ existing `classic_stable_realtime_demos_catalog` and dedicated
 | App | Personal live fleet, alerting, autonomous activity, history and incident timeline | Complete |
 | App | End-to-end health from connectivity, Rate RTM, telemetry and evaluator freshness | Complete |
 | Deployment | Customer-portable bundle, generated App manifest and checked lifecycle entry point | Complete |
-| Deployment | Customer clean-install validation, Lakebase resource-ID guidance and frontend audit gate | In validation |
+| Deployment | Customer clean-install validation, Lakebase resource-ID guidance and frontend audit gate | Complete |
 | Documentation | Architecture, demo, deployment, debt, and evidence plan reconciled | Complete |
 
 ## Validation state
