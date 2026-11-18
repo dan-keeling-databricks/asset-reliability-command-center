@@ -7,11 +7,11 @@ reconciles bundle and governance resources and restarts continuous workloads.  `
 instead updates only the staged Databricks App snapshot for changes contained within the App
 runtime boundary.
 
-For a complete deployment, the data-plane phase migrates Lakebase, pauses and stops obsolete
-Kafka workloads, and starts the shared Spark Rate RTM job before the App snapshot is created.
-Remote mutations are disabled unless ``--execute`` is supplied. No credential or generated
-secret is read, printed, or written by this script; Databricks CLI authentication is selected
-only through the required explicit profile.
+For a complete deployment, the data-plane phase migrates Lakebase and starts the shared Spark
+Rate RTM job before the App snapshot is created. ``preflight`` is read-only; only explicit
+``install`` and ``update`` operations mutate the workspace. No credential or generated secret is
+read, printed, or written by this script; Databricks CLI authentication is selected only through
+the required explicit profile.
 """
 
 from __future__ import annotations
@@ -34,9 +34,8 @@ ROOT = Path(__file__).resolve().parents[1]
 BUILD_INFO = ROOT / ".build-info.json"
 MINIMUM_CLI_VERSION = (1, 17, 0)
 
-# The App snapshot is intentionally smaller than the bundle.  In particular, the bundle root
-# contains a managed Genie workspace node that the Databricks Apps snapshot importer cannot
-# deserialize.  Keep this allowlist aligned with actual runtime imports and file reads.
+# The App snapshot is intentionally smaller than the bundle. Keep this allowlist aligned with
+# actual runtime imports and file reads; jobs, notebooks and optional reference assets stay out.
 APP_RUNTIME_DIRECTORIES = (
     Path("backend"),
     Path("frontend/dist"),
@@ -266,7 +265,7 @@ def parse_args() -> argparse.Namespace:
         "--table-timeout-seconds",
         type=int,
         default=600,
-        help="Maximum wait for obsolete jobs to stop and Rate RTM to reach RUNNING.",
+        help="Maximum wait for the Rate RTM workload to reach RUNNING.",
     )
     return parser.parse_args()
 

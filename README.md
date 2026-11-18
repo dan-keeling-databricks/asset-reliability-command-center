@@ -193,8 +193,7 @@ npm --prefix frontend ci
 
 Open `http://127.0.0.1:5173`. `APP_ADAPTER=local` provides a deterministic command-centre
 fixture without Spark, Lakebase, model serving, or Unity Gateway. Genie is intentionally a
-deployed OBO integration and is unavailable without a configured Genie space and forwarded
-Databricks user token.
+production-reference integration and is not part of the default personal-sandbox App.
 
 ## Validation
 

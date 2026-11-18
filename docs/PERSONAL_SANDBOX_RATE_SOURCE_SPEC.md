@@ -209,10 +209,10 @@ to infer sandbox identity at the source boundary.
 - Update the checked full-deployment helper to order:
   1. additive Lakebase migration;
   2. bundle/resource deployment;
-  3. stop obsolete producer/pipeline-runner continuous runs;
+  3. keep Kafka/Lakeflow/Genie outside the primary bundle as optional reference assets;
   4. start the Rate RTM job;
-  5. deploy the App;
-  6. reconcile Skill/MCP/Gateway;
+  5. reconcile Skill/MCP/Gateway;
+  6. deploy the App;
   7. verify Rate telemetry and sandbox isolation.
 - This work is never eligible for `--app-only` deployment.
 - Every Databricks command must explicitly use `--profile fe_vm_rtm`.
@@ -263,7 +263,8 @@ to infer sandbox identity at the source boundary.
 - MCP run context is injected after model selection and cross-sandbox context is rejected.
 - Approval replay remains exactly once under concurrent retries.
 - Frontend contains no handover/read-only operator path and retains all runtime-driven activity.
-- Deployment tests prove obsolete continuous jobs are stopped and only the Rate RTM job is started.
+- Deployment tests prove the primary bundle contains no optional continuous jobs and only the Rate
+  RTM job is started.
 
 ### Integrated acceptance
 

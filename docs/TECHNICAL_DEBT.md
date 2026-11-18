@@ -43,14 +43,16 @@ owning incident before calculating the next sequence.
 policy, Skill files/finalization, and App source permission. A post-deployment probe requires exact
 tool discovery, a successful benign source read, and native `ASK` with no write execution.
 
-### Two-model design drift
+### Direct-model design drift
 
-**Resolved.** Agent reasoning, tool choice, and final response use only
-`databricks-claude-sonnet-4-5`. Obsolete endpoint resources and routing settings were removed.
+**Resolved.** LangGraph reasoning, tool choice, and final response use the configured Unity
+Gateway Model Service. Its current route targets
+`system.ai.databricks-claude-sonnet-4-5`, while the bundle keeps the Foundation Model API choice
+portable and evaluation-ready.
 
 ### Untruthful operational health
 
-**Resolved.** App readiness derives from Lakebase access, latest telemetry, producer heartbeat,
+**Resolved.** App readiness derives from Lakebase access, latest telemetry, Rate RTM heartbeat,
 RTM's durable ingestion effect, and evaluator heartbeat. Stale components produce a degraded
 state with an explicit label.
 
@@ -64,23 +66,23 @@ drop metrics before production use.
 ### Stale frontend deployments and unknown build identity
 
 **Resolved.** `scripts/deploy.py` performs locked installs, the complete test/build gate, frontend
-freshness verification, clean-tree validation, and deterministic build-info generation before
-the App snapshot is deployed. It readiness-gates the producer, RTM, and governed-history
-continuous jobs, grants their service principal verified read access to the synced bundle source
-directory, and exposes the deployed commit through `/api/build-info`.
+freshness verification, clean-tree validation, generated App configuration, and deterministic
+build-info generation before the App snapshot is deployed. It readiness-gates the active Rate RTM
+job, grants the App service principal verified read access to synced bundle source, and exposes the
+deployed commit through `/api/build-info`.
 
 ### Architecture and runbook drift
 
 **Resolved.** README, demo narrative, architecture, deployment, task, debt, and evidence documents
-now describe the SQL pipeline, telemetry-only OBO Genie, single model, strengthened governance,
-existing group, and repository-first deployment path.
+now describe personal Rate sandboxes, LangGraph, Unity Gateway Model Service, MLflow, strengthened
+governance, customer portability, and the repository-first deployment path.
 
 ### Bundle root used as the App snapshot
 
-**Resolved.** The bundle-managed Genie definition materializes as a special workspace node that
-Databricks Apps cannot import. Deployment now stages an allowlisted runtime tree under
-`.artifacts/app`, and the App snapshots only that directory. Tests prove that Genie definitions,
-job/pipeline source, development assets, and stale files do not enter the artifact.
+**Resolved.** Deployment stages an allowlisted runtime tree under `.artifacts/app`, generates its
+environment-specific App manifest there, and snapshots only that directory. Tests prove that
+optional Genie definitions, job/pipeline source, development assets, and stale files do not enter
+the artifact.
 
 ## Accepted design decisions
 

@@ -141,8 +141,8 @@ Installation reconciles resources in dependency order:
 7. the generated App snapshot and required OBO scopes; and
 8. read-only post-install resource checks.
 
-The synthetic Kafka producer and governed-history pipeline runner remain stopped. Genie is not an
-active App dependency in the default installation.
+The synthetic Kafka producer, governed-history pipeline runner and Genie space remain absent from
+the primary target. Genie is not an active App dependency in the default installation.
 
 ### 3. Complete live acceptance
 

@@ -1,10 +1,9 @@
 """Validate and dependency-order deployment of the personal-sandbox data plane.
 
-The helper first grants the existing App service principal the minimum workload privileges and
-runs the idempotent Lakebase migration as that schema-owning identity. It then deploys the full
-bundle, stops the obsolete Kafka producer and governed-history pipeline runner, and starts only
-the shared Spark Rate Real-Time Mode job. This ordering keeps the old writer compatible until the
-additive migration is complete and prevents paused reference workloads from continuing to run.
+The helper first grants the App service principal the minimum workload privileges and runs the
+idempotent Lakebase migration as that schema-owning identity. It then deploys the primary bundle
+and starts the shared Spark Rate Real-Time Mode job. Kafka, Lakeflow and Genie remain outside the
+primary bundle as optional production-reference assets.
 """
 
 from __future__ import annotations
@@ -332,8 +331,7 @@ def stop_continuous_job(args: argparse.Namespace, resource_key: str) -> None:
     )
 
     # Some workspace versions acknowledge cancel-all-runs without terminating an existing
-    # CONTINUOUS_RESTART parent. Cancel each observed parent explicitly before polling so a
-    # legacy producer can never overlap the replacement Rate source.
+    # CONTINUOUS_RESTART parent. Cancel each observed parent explicitly before polling.
     for run_payload in active_job_runs(args, resource_key):
         run_id = run_payload.get("run_id")
         if run_id:
@@ -353,7 +351,7 @@ def stop_continuous_job(args: argparse.Namespace, resource_key: str) -> None:
             return
         time.sleep(args.poll_seconds)
     raise TimeoutError(
-        f"Timed out after {args.timeout_seconds}s stopping obsolete job {resource_key}"
+        f"Timed out after {args.timeout_seconds}s stopping job {resource_key}"
     )
 
 
@@ -441,9 +439,8 @@ def deploy(args: argparse.Namespace) -> None:
     # is reachable if App-SP authentication, migration DDL, or contract verification fails.
     run(bundle_command("run", args, LAKEBASE_MIGRATION_KEY))
 
-    # The full resource deployment changes the legacy continuous resources to PAUSED before they
-    # are canceled. The governed-history assets remain available as a production reference, but
-    # are not part of the active synthetic demo or its readiness gate.
+    # Reconcile only the primary personal-sandbox bundle. Optional production-reference resources
+    # are defined in an un-included fragment and cannot enter this readiness path.
     run(bundle_command("deploy", args, "--auto-approve"))
     # Experiment creation provisions the UC trace tables during the full bundle deployment. Grant
     # access only after those tables exist; the App identity writes traces and admitted users read
@@ -529,7 +526,7 @@ def parse_args() -> argparse.Namespace:
         "--timeout-seconds",
         type=int,
         default=DEFAULT_TIMEOUT_SECONDS,
-        help="Maximum wait for obsolete jobs to stop and Rate RTM to reach RUNNING.",
+        help="Maximum wait for the Rate RTM workload to reach RUNNING.",
     )
     parser.add_argument(
         "--poll-seconds",
