@@ -74,6 +74,7 @@ class DeploymentInputs:
     schema: str
     volume: str
     warehouse_id: str
+    workload_node_type: str
     app_name: str
     app_service_principal_client_id: str | None
     lakebase_project_id: str
@@ -127,6 +128,7 @@ class DeploymentInputs:
             "schema": self.schema,
             "volume": self.volume,
             "warehouse_id": self.warehouse_id,
+            "workload_node_type": self.workload_node_type,
             "lakebase_project_id": self.lakebase_project_id,
             "lakebase_branch_name": self.lakebase_branch,
             "lakebase_database_name": self.lakebase_database,
@@ -225,6 +227,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--schema", required=True, help="Project Unity Catalog schema.")
     parser.add_argument("--volume", required=True, help="Managed checkpoint volume name.")
     parser.add_argument("--warehouse-id", required=True, help="SQL warehouse resource ID.")
+    parser.add_argument(
+        "--workload-node-type",
+        required=True,
+        help="Available classic compute node type selected for Spark workloads.",
+    )
     parser.add_argument("--app-name", required=True, help="Databricks App name.")
     parser.add_argument(
         "--app-service-principal-client-id",
@@ -686,6 +693,8 @@ def deployment_steps(
                 inputs.volume,
                 "--warehouse-id",
                 inputs.warehouse_id,
+                "--workload-node-type",
+                inputs.workload_node_type,
                 "--workspace-host",
                 inputs.expected_host.rstrip("/"),
                 "--app-name",
@@ -768,7 +777,7 @@ def install_bootstrap_step(inputs: DeploymentInputs) -> Step:
             *inputs.bundle_flags,
             "--auto-approve",
             "--select",
-            "apps.command_center",
+            "schemas.project_schema,apps.command_center",
         ],
     )
 
@@ -865,6 +874,7 @@ def main() -> None:
         schema=args.schema,
         volume=args.volume,
         warehouse_id=args.warehouse_id,
+        workload_node_type=args.workload_node_type,
         app_name=args.app_name,
         app_service_principal_client_id=args.app_service_principal_client_id,
         lakebase_project_id=args.lakebase_project_id,

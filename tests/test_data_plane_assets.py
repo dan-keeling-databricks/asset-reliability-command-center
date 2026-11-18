@@ -22,6 +22,7 @@ def deployment_args(**overrides) -> Namespace:
         "schema": "schema",
         "volume": "runtime",
         "warehouse_id": "warehouse-123",
+        "workload_node_type": "Standard_D8s_v5",
         "workspace_host": "https://workspace.example",
         "app_name": "customer-app",
         "lakebase_project_id": "customer-project",
@@ -193,14 +194,20 @@ def test_bundle_uses_classic_pipeline_native_genie_and_obo_scope() -> None:
         "service_principal_name: ${resources.apps.command_center.service_principal_client_id}"
     ) == 9
     assert "asset_reliability_workloads:" in bundle
+    assert "project_schema:" in bundle
     assert '"minValue": 0' in bundle
     assert '"maxValue": 1' in bundle
-    assert '"value": "i3.xlarge"' in bundle
-    assert '"value": "ON_DEMAND"' in bundle
+    assert '"value": "${var.workload_node_type}"' in bundle
+    assert "aws_attributes" not in combined_resources
+    assert "i3.xlarge" not in combined_resources
     # Lakeflow Declarative Pipelines reject policies that define data_security_mode. The four
     # standalone job clusters still set SINGLE_USER explicitly in their resource definitions.
     assert '"data_security_mode": {' not in bundle
     assert combined_resources.count("data_security_mode: SINGLE_USER") == 4
+    assert bundle.count("node_type_id: ${var.workload_node_type}") == 3
+    assert production_reference.count(
+        "node_type_id: ${var.telemetry_pipeline_node_type}"
+    ) == 2
     assert "runtime_engine: STANDARD" in bundle
     assert "trigger_interval: 10 seconds" in bundle
     assert combined_resources.count(

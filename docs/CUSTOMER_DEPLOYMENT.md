@@ -67,6 +67,8 @@ Important choices:
 - Use an existing App access group; the installer does not create people or groups.
 - Size `sandbox_capacity` for concurrent authenticated users. The default design uses one shared
   Rate stream, not one Spark query per user.
+- Select an available classic compute node type for the target cloud and region. The bundle does
+  not embed AWS or Azure instance families.
 - Keep the initial Rate settings at two samples per second per pump and four source partitions
   unless load testing justifies a change.
 - Select a Foundation Model API model that is available in the target region.
@@ -275,6 +277,7 @@ uv run python scripts/deploy.py preflight \
   --schema "<project-schema>" \
   --volume "<managed-checkpoint-volume>" \
   --warehouse-id "<existing-sql-warehouse-id>" \
+  --workload-node-type "<approved-classic-node-type>" \
   --app-name "<asset-reliability-app-name>" \
   --lakebase-project-id "<lakebase-project-id>" \
   --lakebase-branch "<lakebase-branch>" \

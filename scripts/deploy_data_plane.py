@@ -55,6 +55,7 @@ def bundle_command(action: str, args: argparse.Namespace, *extra: str) -> list[s
         "schema": args.schema,
         "volume": args.volume,
         "warehouse_id": args.warehouse_id,
+        "workload_node_type": args.workload_node_type,
         "workspace_host": args.workspace_host,
         "app_name": args.app_name,
         "lakebase_project_id": args.lakebase_project_id,
@@ -501,6 +502,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--volume", required=True)
     parser.add_argument("--warehouse-id", required=True)
+    parser.add_argument("--workload-node-type", required=True)
     parser.add_argument("--workspace-host", required=True)
     parser.add_argument("--app-name", required=True)
     parser.add_argument("--lakebase-project-id", required=True)

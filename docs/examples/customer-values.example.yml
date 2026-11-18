@@ -12,6 +12,7 @@ unity_catalog:
   schema: <project-schema>
   checkpoint_volume: <managed-checkpoint-volume>
   sql_warehouse_id: <existing-sql-warehouse-id>
+  workload_node_type: <approved-classic-node-type>
 
 app:
   name: <asset-reliability-app-name>

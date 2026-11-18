@@ -34,6 +34,7 @@ def inputs() -> DeploymentInputs:
         schema="asset_reliability",
         volume="runtime",
         warehouse_id="warehouse-123",
+        workload_node_type="Standard_D8s_v5",
         app_name="asset-reliability-center",
         app_service_principal_client_id="existing-app-sp",
         lakebase_project_id="customer-project",
@@ -96,6 +97,8 @@ def test_deployment_steps_are_explicit_and_dependency_ordered() -> None:
     assert "existing-app-sp" in steps[0].command
     assert "--timeout-seconds" in steps[0].command
     assert "900" in steps[0].command
+    assert "--workload-node-type" in steps[0].command
+    assert "Standard_D8s_v5" in steps[0].command
 
 
 def test_fresh_install_bootstraps_app_before_resolving_its_identity() -> None:
@@ -104,10 +107,14 @@ def test_fresh_install_bootstraps_app_before_resolving_its_identity() -> None:
     step = install_bootstrap_step(unresolved)
 
     assert step.command[:3] == ["databricks", "bundle", "deploy"]
-    assert step.command[-2:] == ["--select", "apps.command_center"]
+    assert step.command[-2:] == [
+        "--select",
+        "schemas.project_schema,apps.command_center",
+    ]
     assert not any("app_service_principal_client_id" in item for item in step.command)
     assert "lakebase_branch_name=production" in step.command
     assert "lakebase_database_name=asset-reliability-db" in step.command
+    assert "workload_node_type=Standard_D8s_v5" in step.command
 
 
 def test_app_identity_is_discovered_and_optional_expectation_is_verified() -> None:

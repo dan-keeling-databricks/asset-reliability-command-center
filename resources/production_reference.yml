@@ -12,7 +12,6 @@ variables:
     default: asset-reliability-pump-telemetry
   telemetry_pipeline_node_type:
     description: Classic-compute worker type for governed telemetry ingestion.
-    default: i3.xlarge
   production_reference_access_group:
     description: Existing workspace group granted access to optional history and Genie resources.
   genie_parent_path:
@@ -49,7 +48,7 @@ resources:
           new_cluster:
             policy_id: ${resources.cluster_policies.asset_reliability_workloads.id}
             spark_version: 17.3.x-scala2.13
-            node_type_id: i3.xlarge
+            node_type_id: ${var.telemetry_pipeline_node_type}
             num_workers: 0
             data_security_mode: SINGLE_USER
             spark_conf:
@@ -58,8 +57,6 @@ resources:
             custom_tags:
               ResourceClass: SingleNode
               Workload: asset-reliability-producer
-            aws_attributes:
-              availability: ON_DEMAND
       tasks:
         - task_key: produce_telemetry
           job_cluster_key: producer_cluster
@@ -119,8 +116,6 @@ resources:
           policy_id: ${resources.cluster_policies.asset_reliability_workloads.id}
           node_type_id: ${var.telemetry_pipeline_node_type}
           num_workers: 1
-          aws_attributes:
-            availability: ON_DEMAND
           custom_tags:
             Workload: asset-reliability-governed-history
       permissions:
