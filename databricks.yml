@@ -53,8 +53,18 @@ variables:
     default: projects/asset-reliability-command-center/branches/production/endpoints/primary
   lakebase_schema:
     default: asset_reliability
-  model:
-    default: databricks-claude-sonnet-4-5
+  foundation_model:
+    description: Unity Catalog Foundation Model API model routed by the agent Model Service.
+    default: system.ai.databricks-claude-sonnet-4-5
+  model_service_name:
+    description: Unity Catalog Model Service used by the LangGraph agent for inference.
+    default: asset_reliability_agent_model
+  mlflow_experiment_name:
+    description: Absolute workspace path for LangGraph traces and GenAI evaluation runs.
+    default: /Shared/asset-reliability-command-centre-agent
+  mlflow_trace_table_prefix:
+    description: Stable prefix for the Unity Catalog tables that persist MLflow traces.
+    default: asset_reliability_agent
 
 sync:
   include:
@@ -201,6 +211,22 @@ resources:
               schema_fqn: ${var.catalog}.${var.schema}
               volume_fqn: ${var.catalog}.${var.schema}.${var.volume}
 
+    setup_agent_observability_access:
+      name: Asset Reliability — grant agent observability access
+      description: Grants trace-table write access to the App identity and read access to App users.
+      tasks:
+        - task_key: grant_agent_observability
+          sql_task:
+            file:
+              path: ./sql/grant_agent_observability.sql
+            warehouse_id: ${var.warehouse_id}
+            parameters:
+              catalog_name: ${var.catalog}
+              schema_name: ${var.schema}
+              table_prefix: ${var.mlflow_trace_table_prefix}
+              app_service_principal: ${var.app_service_principal_client_id}
+              app_access_group: ${var.app_access_group}
+
     migrate_lakebase_schema:
       name: Asset Reliability — migrate App-owned Lakebase schema
       description: Applies idempotent Lakebase DDL as the existing App service principal.
@@ -343,6 +369,41 @@ resources:
             pipeline_id: ${resources.pipelines.governed_telemetry_history.id}
             full_refresh: false
 
+    evaluate_agent_traces:
+      name: Asset Reliability — evaluate governed agent traces
+      description: Evaluates genuine P-202, P-207 and P-204 LangGraph traces against known outcomes.
+      run_as:
+        service_principal_name: ${var.app_service_principal_client_id}
+      job_clusters:
+        - job_cluster_key: evaluation_cluster
+          new_cluster:
+            policy_id: ${resources.cluster_policies.asset_reliability_workloads.id}
+            spark_version: 17.3.x-scala2.13
+            node_type_id: i3.xlarge
+            num_workers: 0
+            data_security_mode: SINGLE_USER
+            enable_elastic_disk: true
+            spark_conf:
+              spark.master: local[*, 4]
+              spark.databricks.cluster.profile: singleNode
+            custom_tags:
+              ResourceClass: SingleNode
+              Workload: asset-reliability-agent-evaluation
+            aws_attributes:
+              availability: ON_DEMAND
+      tasks:
+        - task_key: evaluate_known_outcomes
+          job_cluster_key: evaluation_cluster
+          notebook_task:
+            notebook_path: ./src/evaluation/evaluate_agent_traces.py
+            base_parameters:
+              experiment_id: ${resources.experiments.agent_observability.id}
+              sql_warehouse_id: ${var.warehouse_id}
+              trace_lookback_hours: "168"
+          libraries:
+            - pypi:
+                package: mlflow[databricks]>=3.18,<4
+
   pipelines:
     governed_telemetry_history:
       name: Asset Reliability — governed telemetry history
@@ -388,6 +449,39 @@ resources:
         - level: CAN_RUN
           group_name: ${var.telemetry_analysis_group}
 
+  model_services:
+    agent_model:
+      parent: schemas/${var.catalog}.${var.schema}
+      model_service_id: ${var.model_service_name}
+      comment: Governed Foundation Model API route for the Asset Reliability LangGraph agent.
+      config:
+        routing:
+          destinations:
+            - name: primary
+              destination_type: DESTINATION_TYPE_PAY_PER_TOKEN_FOUNDATION_MODEL
+              pay_per_token_config:
+                model: models/${var.foundation_model}
+              traffic_percentage: 100
+
+  experiments:
+    agent_observability:
+      name: ${var.mlflow_experiment_name}
+      trace_location:
+        uc_trace_location:
+          catalog: ${var.catalog}
+          schema: ${var.schema}
+          table_prefix: ${var.mlflow_trace_table_prefix}
+      tags:
+        - key: application
+          value: asset-reliability-command-centre
+        - key: purpose
+          value: langgraph-tracing-and-genai-evaluation
+      permissions:
+        - level: CAN_EDIT
+          service_principal_name: ${resources.apps.command_center.service_principal_client_id}
+        - level: CAN_READ
+          group_name: ${var.app_access_group}
+
   apps:
     command_center:
       name: asset-reliability-center
@@ -412,10 +506,15 @@ resources:
           sql_warehouse:
             id: ${var.warehouse_id}
             permission: CAN_USE
-        - name: model
-          serving_endpoint:
-            name: ${var.model}
-            permission: CAN_QUERY
+        - name: agent-model-service
+          uc_securable:
+            securable_type: MODEL_SERVICE
+            securable_full_name: ${var.catalog}.${var.schema}.${var.model_service_name}
+            permission: EXECUTE
+        - name: agent-mlflow-experiment
+          experiment:
+            experiment_id: ${resources.experiments.agent_observability.id}
+            permission: CAN_EDIT
         - name: fleet-telemetry-genie
           genie_space:
             name: fleet-telemetry-genie

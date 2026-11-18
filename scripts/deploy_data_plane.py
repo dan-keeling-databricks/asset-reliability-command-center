@@ -428,6 +428,10 @@ def deploy(args: argparse.Namespace) -> None:
     # are canceled. The governed-history assets remain available as a production reference, but
     # are not part of the active synthetic demo or its readiness gate.
     run(bundle_command("deploy", args, "--auto-approve"))
+    # Experiment creation provisions the UC trace tables during the full bundle deployment. Grant
+    # access only after those tables exist; the App identity writes traces and admitted users read
+    # them through MLflow. This setup job is idempotent and blocks App deployment on failure.
+    run(bundle_command("run", args, "setup_agent_observability_access"))
     grant_bundle_source_read(args)
     for resource_key in OBSOLETE_CONTINUOUS_JOB_KEYS:
         stop_continuous_job(args, resource_key)

@@ -11,7 +11,15 @@ env:
   - name: LAKEBASE_ENDPOINT
     valueFrom: lakebase
   - name: MODEL_ENDPOINT
-    valueFrom: model
+    valueFrom: agent-model-service
+  - name: MLFLOW_TRACKING_URI
+    value: databricks
+  - name: MLFLOW_EXPERIMENT_ID
+    valueFrom: agent-mlflow-experiment
+  - name: MLFLOW_TRACING_DESTINATION
+    value: classic_stable_realtime_demos_catalog.asset_reliability_command_center
+  - name: MLFLOW_TRACING_SQL_WAREHOUSE_ID
+    valueFrom: sql-warehouse
   - name: DATABRICKS_GENIE_SPACE_ID
     valueFrom: fleet-telemetry-genie
   - name: GENIE_SOURCE_LABEL
