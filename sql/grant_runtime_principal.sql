@@ -43,9 +43,9 @@ SELECT 'CATALOG' AS object_type, catalog_name AS object_name, privilege_type
 FROM system.information_schema.catalog_privileges
 WHERE catalog_name = runtime_catalog AND grantee = runtime_principal
 UNION ALL
-SELECT 'SCHEMA', concat(schema_catalog, '.', schema_name), privilege_type
+SELECT 'SCHEMA', concat(catalog_name, '.', schema_name), privilege_type
 FROM system.information_schema.schema_privileges
-WHERE concat(schema_catalog, '.', schema_name) = runtime_schema_fqn
+WHERE concat(catalog_name, '.', schema_name) = runtime_schema_fqn
   AND grantee = runtime_principal
 UNION ALL
 SELECT 'VOLUME', concat(volume_catalog, '.', volume_schema, '.', volume_name), privilege_type
