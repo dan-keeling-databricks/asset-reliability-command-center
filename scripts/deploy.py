@@ -835,6 +835,58 @@ def install_bootstrap_step(inputs: DeploymentInputs) -> Step:
     )
 
 
+def install_app_dependencies_step(inputs: DeploymentInputs) -> Step:
+    """Create App-attached governed resources before resolving the App identity."""
+
+    return Step(
+        "Create Lakebase, Model Service, and MLflow App dependencies",
+        [
+            "databricks",
+            "bundle",
+            "deploy",
+            *inputs.bundle_flags,
+            "--auto-approve",
+            "--select",
+            (
+                "postgres_projects.asset_reliability_postgres,"
+                "model_services.agent_model,experiments.agent_observability"
+            ),
+        ],
+    )
+
+
+def wait_for_model_service(
+    runner: Runner, inputs: DeploymentInputs, *, timeout_seconds: int = 180
+) -> None:
+    """Wait until Apps resource resolution can observe the governed Model Service."""
+
+    service_fqn = f"{inputs.schema_fqn}.{inputs.model_service_name}"
+    command = [
+        "databricks",
+        "api",
+        "get",
+        f"/api/2.1/unity-catalog/model-services/{service_fqn}",
+        "--profile",
+        inputs.profile,
+        "-o",
+        "json",
+    ]
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        try:
+            result = runner.run(command, capture=True)
+        except subprocess.CalledProcessError:
+            pass
+        else:
+            payload = json.loads(result.stdout)
+            if str(payload.get("name", "")).endswith(service_fqn):
+                return
+        time.sleep(2)
+    raise TimeoutError(
+        f"Unity Gateway Model Service {service_fqn} was not visible after {timeout_seconds}s"
+    )
+
+
 def assert_app_only_steps(
     steps: list[Step], app_name: str, app_source_path: str
 ) -> None:
@@ -986,6 +1038,10 @@ def main() -> None:
         print(f"\n==> {schema_bootstrap.label}")
         runner.run(schema_bootstrap.command)
         wait_for_schema(runner, inputs)
+        dependencies = install_app_dependencies_step(inputs)
+        print(f"\n==> {dependencies.label}")
+        runner.run(dependencies.command)
+        wait_for_model_service(runner, inputs)
         bootstrap = install_bootstrap_step(inputs)
         print(f"\n==> {bootstrap.label}")
         runner.run(bootstrap.command)

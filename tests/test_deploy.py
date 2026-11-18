@@ -17,6 +17,7 @@ from scripts.deploy import (
     bind_app_identity,
     deployment_steps,
     generated_app_environment,
+    install_app_dependencies_step,
     install_bootstrap_step,
     install_schema_step,
     resolve_app_source_path,
@@ -106,9 +107,17 @@ def test_fresh_install_bootstraps_app_before_resolving_its_identity() -> None:
     unresolved = replace(inputs(), app_service_principal_client_id=None)
 
     schema_step = install_schema_step(unresolved)
+    dependencies_step = install_app_dependencies_step(unresolved)
     step = install_bootstrap_step(unresolved)
 
     assert schema_step.command[-2:] == ["--select", "schemas.project_schema"]
+    assert dependencies_step.command[-2:] == [
+        "--select",
+        (
+            "postgres_projects.asset_reliability_postgres,"
+            "model_services.agent_model,experiments.agent_observability"
+        ),
+    ]
     assert step.command[:3] == ["databricks", "bundle", "deploy"]
     assert step.command[-2:] == ["--select", "apps.command_center"]
     assert not any("app_service_principal_client_id" in item for item in step.command)
