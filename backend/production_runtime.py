@@ -196,7 +196,10 @@ class ProductionCommandCenterRuntime:
                 span.set_attribute("asset.incident_id", incident_id)
                 if pump_id := getattr(incident, "asset_id", None):
                     span.set_attribute("asset.pump_id", pump_id)
-                mlflow.update_current_trace(session_id=sandbox_id)
+                trace_tags = {"asset.incident_id": incident_id}
+                if pump_id:
+                    trace_tags["asset.pump_id"] = pump_id
+                mlflow.update_current_trace(tags=trace_tags, session_id=sandbox_id)
                 final_state = await graph.ainvoke(
                     {
                         "entrypoint": "approval",
@@ -209,7 +212,13 @@ class ProductionCommandCenterRuntime:
                 )
                 if final_state.get("replay_completed"):
                     span.set_attribute("asset.outcome", "work_order_created")
-                span.set_outputs({"phase": final_state.get("phase", "unknown")})
+                    mlflow.update_current_trace(tags={"asset.outcome": "work_order_created"})
+                span.set_outputs(
+                    {
+                        "phase": final_state.get("phase", "unknown"),
+                        "response": "The approved governed request was replayed exactly once.",
+                    }
+                )
             trace_id = mlflow.get_last_active_trace_id()
             if trace_id:
                 await self._record_trace_link(incident_id, trace_id)
@@ -315,7 +324,9 @@ class ProductionCommandCenterRuntime:
             ) as span:
                 span.set_inputs({"incident_id": incident_id, "sandbox_id": sandbox_id})
                 span.set_attribute("asset.incident_id", incident_id)
-                mlflow.update_current_trace(session_id=sandbox_id)
+                mlflow.update_current_trace(
+                    tags={"asset.incident_id": incident_id}, session_id=sandbox_id
+                )
                 final_state = await graph.ainvoke(
                     {"incident_id": incident_id, "sandbox_id": sandbox_id},
                     config={"recursion_limit": 100},
@@ -329,7 +340,20 @@ class ProductionCommandCenterRuntime:
                 }.get(final_state.get("phase"))
                 if outcome:
                     span.set_attribute("asset.outcome", outcome)
-                span.set_outputs({"phase": final_state.get("phase", "unknown")})
+                trace_tags = {"asset.incident_id": incident_id}
+                if incident:
+                    trace_tags["asset.pump_id"] = incident.asset_id
+                if outcome:
+                    trace_tags["asset.outcome"] = outcome
+                mlflow.update_current_trace(tags=trace_tags)
+                span.set_outputs(
+                    {
+                        "phase": final_state.get("phase", "unknown"),
+                        "response": final_state.get("terminal_response")
+                        or final_state.get("model_summary")
+                        or "",
+                    }
+                )
             trace_id = mlflow.get_last_active_trace_id()
             if trace_id:
                 await self._record_trace_link(incident_id, trace_id)
@@ -790,8 +814,8 @@ class ProductionCommandCenterRuntime:
                 category="trace",
                 title="MLflow trace",
                 status="complete",
-                status_label="Recorded",
-                summary="LangGraph execution was recorded in MLflow.",
+                status_label="Captured",
+                summary="MLflow assigned a trace identifier to this LangGraph execution.",
                 action=RuntimeAction(
                     label="Open MLflow trace",
                     kind="link",
