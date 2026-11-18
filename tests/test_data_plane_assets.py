@@ -11,6 +11,38 @@ import pytest
 
 from scripts import deploy_data_plane
 
+
+def deployment_args(**overrides) -> Namespace:
+    values = {
+        "profile": "explicit-profile",
+        "target": "dev",
+        "access_group": "existing-group",
+        "app_service_principal_client_id": "existing-app-sp",
+        "catalog": "catalog",
+        "schema": "schema",
+        "volume": "runtime",
+        "warehouse_id": "warehouse-123",
+        "app_name": "customer-app",
+        "lakebase_project_id": "customer-project",
+        "lakebase_branch": "main",
+        "lakebase_database": "customer-database",
+        "lakebase_database_resource_name": "customer-database-resource",
+        "lakebase_endpoint_name": "primary",
+        "lakebase_endpoint_path": "projects/customer-project/branches/main/endpoints/primary",
+        "lakebase_schema": "asset_reliability",
+        "foundation_model": "system.ai.customer-model",
+        "model_service_name": "agent-model",
+        "mlflow_experiment_name": "/Shared/customer-agent",
+        "mlflow_trace_table_prefix": "customer_agent",
+        "sandbox_capacity": 40,
+        "telemetry_samples_per_second": 2,
+        "telemetry_source_partitions": 4,
+        "timeout_seconds": 60,
+        "poll_seconds": 0,
+    }
+    values.update(overrides)
+    return Namespace(**values)
+
 ROOT = Path(__file__).resolve().parents[1]
 PIPELINE = ROOT / "src" / "pipelines" / "governed_telemetry_history.sql"
 RATE_RTM = ROOT / "src" / "streaming" / "rate_to_lakebase_rtm.py"
@@ -311,16 +343,7 @@ def test_runtime_principal_grant_is_minimal_and_idempotent() -> None:
 
 def test_deployment_helper_migrates_stops_legacy_and_starts_rate(monkeypatch) -> None:
     events: list[tuple[object, ...]] = []
-    args = Namespace(
-        profile="explicit-profile",
-        target="dev",
-        access_group="existing-group",
-        app_service_principal_client_id="existing-app-sp",
-        catalog="catalog",
-        schema="schema",
-        timeout_seconds=60,
-        poll_seconds=0,
-    )
+    args = deployment_args()
 
     monkeypatch.setattr(
         deploy_data_plane,
@@ -392,7 +415,7 @@ def test_deployment_helper_migrates_stops_legacy_and_starts_rate(monkeypatch) ->
         "jobs.migrate_lakebase_schema",
     )
     assert "migrate_lakebase_schema" in events[4]
-    assert events[5] == (
+    assert events[5][:7] == (
         "run",
         "databricks",
         "bundle",
@@ -400,17 +423,14 @@ def test_deployment_helper_migrates_stops_legacy_and_starts_rate(monkeypatch) ->
         "--target",
         "dev",
         "--profile",
-        "explicit-profile",
-        "--var",
-        "app_access_group=existing-group",
-        "--var",
-        "app_service_principal_client_id=existing-app-sp",
-        "--var",
-        "catalog=catalog",
-        "--var",
-        "schema=schema",
-        "--auto-approve",
     )
+    assert "app_access_group=existing-group" in events[5]
+    assert "catalog=catalog" in events[5]
+    assert "lakebase_branch_name=main" in events[5]
+    assert "lakebase_database_name=customer-database" in events[5]
+    assert "lakebase_database_resource_name=customer-database-resource" in events[5]
+    assert "lakebase_endpoint_name=primary" in events[5]
+    assert "--auto-approve" in events[5]
     assert "setup_agent_observability_access" in events[6]
     assert events[8:10] == [
         ("stop", "telemetry_producer"),
@@ -425,16 +445,7 @@ def test_deployment_helper_migrates_stops_legacy_and_starts_rate(monkeypatch) ->
 
 
 def test_migration_failure_prevents_every_continuous_restart(monkeypatch) -> None:
-    args = Namespace(
-        profile="explicit-profile",
-        target="dev",
-        access_group="existing-group",
-        app_service_principal_client_id="existing-app-sp",
-        catalog="catalog",
-        schema="schema",
-        timeout_seconds=60,
-        poll_seconds=0,
-    )
+    args = deployment_args()
     replacements: list[str] = []
 
     monkeypatch.setattr(deploy_data_plane, "selective_deploy", lambda *_args: None)

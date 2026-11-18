@@ -8,8 +8,8 @@ from databricks.sdk.service.catalog import ProvisioningInfoState
 import scripts.deploy_governance as deployment
 from backend.gateway import GatewayAsk, GatewayElicitation
 from scripts.deploy_governance import (
-    POLICY_FQN,
     TOOLS,
+    GovernanceConfig,
     _connection_drift,
     _service_config_matches,
     ensure_connection,
@@ -19,6 +19,44 @@ from scripts.deploy_governance import (
 )
 
 
+def config() -> GovernanceConfig:
+    return GovernanceConfig(
+        profile="customer-profile",
+        catalog="customer_catalog",
+        schema="asset_reliability",
+        app_name="customer-reliability-app",
+        skill_id="asset-reliability-response",
+        connection_id="asset_reliability_mcp_connection",
+        service_id="asset_reliability_mcp",
+        policy_function_name="submit_work_order_policy",
+        uc_audience="customer-users",
+    )
+
+
+def test_governance_configuration_has_no_maintainer_defaults(monkeypatch) -> None:
+    variables = {
+        "DATABRICKS_CONFIG_PROFILE": "customer-profile",
+        "ASSET_RELIABILITY_CATALOG": "customer_catalog",
+        "ASSET_RELIABILITY_SCHEMA": "asset_reliability",
+        "ASSET_RELIABILITY_APP_NAME": "customer-app",
+        "ASSET_RELIABILITY_SKILL_ID": "asset-reliability-response",
+        "ASSET_RELIABILITY_MCP_CONNECTION_ID": "customer_connection",
+        "ASSET_RELIABILITY_MCP_SERVICE_ID": "customer_service",
+        "ASSET_RELIABILITY_POLICY_FUNCTION_NAME": "customer_policy",
+        "ASSET_RELIABILITY_UC_AUDIENCE": "customer-users",
+    }
+    for name in variables:
+        monkeypatch.delenv(name, raising=False)
+    with pytest.raises(RuntimeError, match="Missing explicit governance"):
+        GovernanceConfig.from_environment()
+
+    for name, value in variables.items():
+        monkeypatch.setenv(name, value)
+    resolved = GovernanceConfig.from_environment()
+    assert resolved.profile == "customer-profile"
+    assert resolved.service_fqn == "customer_catalog.asset_reliability.customer_service"
+
+
 def test_user_permissions_cover_skill_and_gateway_without_genie_data() -> None:
     updates: list[tuple[str, str, list]] = []
 
@@ -26,15 +64,16 @@ def test_user_permissions_cover_skill_and_gateway_without_genie_data() -> None:
         def update(self, securable_type, full_name, *, changes):
             updates.append((securable_type, full_name, changes))
 
-    applied = ensure_user_permissions(SimpleNamespace(grants=Grants()))
+    settings = config()
+    applied = ensure_user_permissions(SimpleNamespace(grants=Grants()), settings)
 
     assert [item[:2] for item in updates] == [
-        ("CATALOG", deployment.CATALOG),
-        ("SCHEMA", f"{deployment.CATALOG}.{deployment.SCHEMA}"),
-        ("SKILL", deployment.SKILL_FQN),
-        ("MCP_SERVICE", deployment.SERVICE_FQN),
+        ("CATALOG", settings.catalog),
+        ("SCHEMA", f"{settings.catalog}.{settings.schema}"),
+        ("SKILL", settings.skill_fqn),
+        ("MCP_SERVICE", settings.service_fqn),
     ]
-    assert all(item[2][0].principal == "account users" for item in updates)
+    assert all(item[2][0].principal == "customer-users" for item in updates)
     assert [item[2][0].add[0].value for item in updates] == [
         "USE_CATALOG",
         "USE_SCHEMA",
@@ -78,9 +117,9 @@ def test_failed_connection_rotates_credential_even_without_visible_drift() -> No
         service_principal_client_id="app-sp",
         service_principal_id=123,
     )
-    config = SimpleNamespace(host="https://workspace.example")
+    workspace_config = SimpleNamespace(host="https://workspace.example")
     desired = deployment._connection_options(
-        SimpleNamespace(config=config), app, "<redacted>"
+        SimpleNamespace(config=workspace_config), app, "<redacted>"
     )
     connection = SimpleNamespace(
         options={key: value for key, value in desired.items() if key != "client_secret"},
@@ -108,12 +147,12 @@ def test_failed_connection_rotates_credential_even_without_visible_drift() -> No
             raise AssertionError("Successful rotation must not delete the new credential")
 
     client = SimpleNamespace(
-        config=config,
+        config=workspace_config,
         connections=Connections(),
         service_principal_secrets_proxy=Secrets(),
     )
 
-    reconciled, status = ensure_connection(client, app)
+    reconciled, status = ensure_connection(client, app, config())
 
     assert status == "recovered"
     assert created_secrets == ["created"]
@@ -139,6 +178,7 @@ def test_service_drift_is_patched_to_declared_tools_and_ask_policy() -> None:
     service, status = ensure_service(
         SimpleNamespace(api_client=ApiClient()),
         "policy-function-id",
+        config(),
         retry_delay_seconds=0,
     )
 
@@ -148,7 +188,7 @@ def test_service_drift_is_patched_to_declared_tools_and_ask_policy() -> None:
         {
             "name": "submit_work_order_requires_approval",
             "policy_type": "POLICY_TYPE_CUSTOM",
-            "handler": f"functions/{POLICY_FQN}",
+            "handler": f"functions/{config().policy_fqn}",
             "function_id": "policy-function-id",
             "rank": 1,
         }
@@ -158,7 +198,7 @@ def test_service_drift_is_patched_to_declared_tools_and_ask_policy() -> None:
 
 
 def test_service_match_ignores_gateway_expansion_but_not_governed_drift() -> None:
-    desired = deployment._service_config("policy-function-id")
+    desired = deployment._service_config("policy-function-id", config())
     actual = {
         "source_connection": {
             "name": "connections/asset_reliability_mcp_connection",
@@ -181,7 +221,7 @@ def test_service_match_ignores_gateway_expansion_but_not_governed_drift() -> Non
 
 def test_service_patch_is_retried_until_a_fresh_get_observes_declared_config() -> None:
     calls: list[str] = []
-    desired = deployment._service_config("policy-function-id")
+    desired = deployment._service_config("policy-function-id", config())
     get_count = 0
 
     class ApiClient:
@@ -200,6 +240,7 @@ def test_service_patch_is_retried_until_a_fresh_get_observes_declared_config() -
     service, status = ensure_service(
         SimpleNamespace(api_client=ApiClient()),
         "policy-function-id",
+        config(),
         max_attempts=3,
         retry_delay_seconds=0,
     )
@@ -217,7 +258,7 @@ async def test_policy_probe_discovers_tools_rejects_unscoped_source_then_gets_as
 
     class FakeGateway:
         def __init__(self, endpoint):
-            assert endpoint.endswith(deployment.SERVICE_FQN)
+            assert endpoint.endswith(config().service_fqn)
 
         async def list_tools(self, token):
             assert token == "obo-token"
@@ -246,7 +287,7 @@ async def test_policy_probe_discovers_tools_rejects_unscoped_source_then_gets_as
         )
     )
 
-    result = await probe_submit_policy(client, retry_delay_seconds=0)
+    result = await probe_submit_policy(client, config(), retry_delay_seconds=0)
 
     assert events == ["list", "get_asset_telemetry", "submit_work_order", "close"]
     assert result == {
@@ -280,4 +321,4 @@ async def test_policy_probe_rejects_any_tool_surface_drift(monkeypatch) -> None:
     )
 
     with pytest.raises(RuntimeError, match="exact declared tool set"):
-        await probe_submit_policy(client, max_attempts=1, retry_delay_seconds=0)
+        await probe_submit_policy(client, config(), max_attempts=1, retry_delay_seconds=0)

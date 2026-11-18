@@ -17,7 +17,6 @@ from pathlib import Path
 from typing import Any
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_ACCESS_GROUP = "users"
 DEFAULT_TIMEOUT_SECONDS = 1_200
 COMPUTE_POLICY_KEY = "asset_reliability_workloads"
 LAKEBASE_MIGRATION_KEY = "migrate_lakebase_schema"
@@ -55,7 +54,28 @@ def run_json(command: list[str]) -> dict[str, Any]:
 def bundle_command(action: str, args: argparse.Namespace, *extra: str) -> list[str]:
     """Build a bundle command with an explicit profile, target, and access group."""
 
-    return [
+    variables = {
+        "app_access_group": args.access_group,
+        "catalog": args.catalog,
+        "schema": args.schema,
+        "volume": args.volume,
+        "warehouse_id": args.warehouse_id,
+        "app_name": args.app_name,
+        "lakebase_project_id": args.lakebase_project_id,
+        "lakebase_branch_name": args.lakebase_branch,
+        "lakebase_database_name": args.lakebase_database,
+        "lakebase_database_resource_name": args.lakebase_database_resource_name,
+        "lakebase_endpoint_name": args.lakebase_endpoint_name,
+        "lakebase_schema": args.lakebase_schema,
+        "foundation_model": args.foundation_model,
+        "model_service_name": args.model_service_name,
+        "mlflow_experiment_name": args.mlflow_experiment_name,
+        "mlflow_trace_table_prefix": args.mlflow_trace_table_prefix,
+        "sandbox_capacity": args.sandbox_capacity,
+        "telemetry_samples_per_second": args.telemetry_samples_per_second,
+        "telemetry_source_partitions": args.telemetry_source_partitions,
+    }
+    command = [
         "databricks",
         "bundle",
         action,
@@ -63,16 +83,10 @@ def bundle_command(action: str, args: argparse.Namespace, *extra: str) -> list[s
         args.target,
         "--profile",
         args.profile,
-        "--var",
-        f"app_access_group={args.access_group}",
-        "--var",
-        f"app_service_principal_client_id={args.app_service_principal_client_id}",
-        "--var",
-        f"catalog={args.catalog}",
-        "--var",
-        f"schema={args.schema}",
-        *extra,
     ]
+    for name, value in variables.items():
+        command.extend(["--var", f"{name}={value}"])
+    return [*command, *extra]
 
 
 def workspace_command(args: argparse.Namespace, *parts: str) -> list[str]:
@@ -467,27 +481,44 @@ def deploy(args: argparse.Namespace) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--profile", required=True, help="Explicit Databricks CLI profile.")
-    parser.add_argument("--target", default="dev", help="Bundle target (default: dev).")
+    parser.add_argument("--target", required=True, help="Bundle target.")
     parser.add_argument(
         "--access-group",
-        default=DEFAULT_ACCESS_GROUP,
+        required=True,
         help="Existing App-admission group; this helper never creates groups or product roles.",
     )
     parser.add_argument(
         "--app-service-principal-client-id",
-        default="bd5178cb-8774-4d77-bc63-b4f491716d0b",
+        required=True,
         help="Existing Databricks App service-principal application ID.",
     )
     parser.add_argument(
         "--catalog",
-        default="classic_stable_realtime_demos_catalog",
+        required=True,
         help="Catalog containing the governed telemetry view.",
     )
     parser.add_argument(
         "--schema",
-        default="asset_reliability_command_center",
+        required=True,
         help="Schema containing the governed telemetry view.",
     )
+    parser.add_argument("--volume", required=True)
+    parser.add_argument("--warehouse-id", required=True)
+    parser.add_argument("--app-name", required=True)
+    parser.add_argument("--lakebase-project-id", required=True)
+    parser.add_argument("--lakebase-branch", required=True)
+    parser.add_argument("--lakebase-database", required=True)
+    parser.add_argument("--lakebase-database-resource-name", required=True)
+    parser.add_argument("--lakebase-endpoint-name", required=True)
+    parser.add_argument("--lakebase-endpoint-path", required=True)
+    parser.add_argument("--lakebase-schema", required=True)
+    parser.add_argument("--foundation-model", required=True)
+    parser.add_argument("--model-service-name", required=True)
+    parser.add_argument("--mlflow-experiment-name", required=True)
+    parser.add_argument("--mlflow-trace-table-prefix", required=True)
+    parser.add_argument("--sandbox-capacity", required=True, type=int)
+    parser.add_argument("--telemetry-samples-per-second", required=True, type=int)
+    parser.add_argument("--telemetry-source-partitions", required=True, type=int)
     parser.add_argument(
         "--timeout-seconds",
         type=int,
