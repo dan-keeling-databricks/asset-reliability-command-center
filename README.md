@@ -172,6 +172,8 @@ and product-adjacent execution records provide additional text-readable entry po
 - [Business presentation (Google Slides)](https://docs.google.com/presentation/d/1ZjGVpcxIoZDMIautKpRJVBGNnRTJNg9WKH3mFv0_1kI/edit)
 - [Business demo flow](DEMO.md)
 - [Technical architecture](docs/ARCHITECTURE.md)
+- [Customer installation and lifecycle](docs/CUSTOMER_DEPLOYMENT.md)
+- [Customer configuration worksheet](docs/examples/customer-values.example.yml)
 - [Manual deployment and live acceptance](docs/DEPLOYMENT.md)
 - [One-time text evidence package](docs/EVIDENCE.md)
 - [Technical debt and accepted tradeoffs](docs/TECHNICAL_DEBT.md)
