@@ -22,6 +22,7 @@ def test_app_uses_unity_gateway_model_service_and_managed_experiment() -> None:
     assert "experiments:" in bundle
     assert "uc_trace_location:" in bundle
     assert "table_prefix: ${var.mlflow_trace_table_prefix}" in bundle
+    assert 'value: "{{mlflow_trace_table_prefix}}"' in app
     assert "permission: CAN_EDIT" in bundle
     assert "valueFrom: agent-mlflow-experiment" in app
     assert "valueFrom: sql-warehouse" in app

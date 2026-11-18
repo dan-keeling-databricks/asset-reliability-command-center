@@ -405,6 +405,7 @@ def generated_app_environment(inputs: DeploymentInputs) -> dict[str, str]:
         "MLFLOW_TRACING_DESTINATION": (
             f"{inputs.mlflow_trace_catalog}.{inputs.mlflow_trace_schema}"
         ),
+        "MLFLOW_TRACE_TABLE_PREFIX": inputs.mlflow_trace_table_prefix,
         "GOVERNED_MCP_ENDPOINT": (
             f"{host}/ai-gateway/mcp-services/{inputs.mcp_service_fqn}"
         ),

@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     model_endpoint: str = "databricks-claude-sonnet-4-5"
     mlflow_experiment_id: str | None = None
     mlflow_tracing_destination: str | None = None
+    mlflow_trace_table_prefix: str | None = None
     mlflow_tracing_sql_warehouse_id: str | None = None
     governed_mcp_endpoint: str | None = None
     governed_skill_endpoint: str | None = None

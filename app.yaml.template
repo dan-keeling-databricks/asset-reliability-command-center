@@ -20,6 +20,8 @@ env:
     valueFrom: agent-mlflow-experiment
   - name: MLFLOW_TRACING_DESTINATION
     value: "{{mlflow_trace_catalog}}.{{mlflow_trace_schema}}"
+  - name: MLFLOW_TRACE_TABLE_PREFIX
+    value: "{{mlflow_trace_table_prefix}}"
   - name: MLFLOW_TRACING_SQL_WAREHOUSE_ID
     valueFrom: sql-warehouse
   - name: GOVERNED_MCP_ENDPOINT

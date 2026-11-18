@@ -48,13 +48,22 @@ def configure_mlflow_tracing(settings: Settings) -> AgentObservability:
             catalog, separator, schema = destination.partition(".")
             if not separator or not catalog or not schema or "." in schema:
                 raise ValueError("MLFLOW_TRACING_DESTINATION must be a catalog.schema name")
+            table_prefix = settings.mlflow_trace_table_prefix
+            if not table_prefix:
+                raise ValueError(
+                    "MLFLOW_TRACE_TABLE_PREFIX is required for a Unity Catalog trace location"
+                )
             if settings.mlflow_tracing_sql_warehouse_id:
                 os.environ["MLFLOW_TRACING_SQL_WAREHOUSE_ID"] = (
                     settings.mlflow_tracing_sql_warehouse_id
                 )
             mlflow.set_experiment(
                 experiment_id=settings.mlflow_experiment_id,
-                trace_location=UnityCatalog(catalog_name=catalog, schema_name=schema),
+                trace_location=UnityCatalog(
+                    catalog_name=catalog,
+                    schema_name=schema,
+                    table_prefix=table_prefix,
+                ),
             )
         else:
             mlflow.set_experiment(experiment_id=settings.mlflow_experiment_id)
