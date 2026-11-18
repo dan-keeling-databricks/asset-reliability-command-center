@@ -1,189 +1,230 @@
 # Asset Reliability Command Centre
 
-A working Databricks prototype for a process-manufacturing reliability problem: detect pump
-bearing degradation early, autonomously assess the risk of failure before the next maintenance
-window, and govern the resulting maintenance action with human approval.
+Asset Reliability Command Centre is a customer-facing Databricks reference demo for detecting
+industrial pump risk, investigating it with an autonomous agent, and governing the resulting
+maintenance action with a real human approval.
 
-## Business value
+The demo is designed to show how Databricks data, operational serving, application, AI and
+governance capabilities work as one system. It is not a production maintenance product or a
+claim of measured customer value. All telemetry, incidents and work orders are synthetic.
 
-Process manufacturers and power generators depend on pumps for cooling, lubrication, and fluid
-movement. A developing bearing fault can therefore become lost production, a forced outage, or
-equipment damage if the organization detects it too late. Industry research gives the problem
-material scale:
+## What the demo shows
 
-- Poor maintenance strategies can reduce a plant's productive capacity by **5–20%**, while
-  unplanned downtime costs industrial manufacturers an estimated **$50 billion per year**
+A signed-in user receives a private, live estate of eight pumps. Two normal operating transients
+occur once when the sandbox is first created or explicitly reset; the agent reviews them and
+correctly takes no action. The user can then trigger a P-204 bearing-degradation excursion and
+watch the complete governed response:
+
+1. Spark Real-Time Mode writes live telemetry into the user's isolated Lakebase sandbox.
+2. A threshold breach autonomously starts a LangGraph agent hosted in Databricks Apps.
+3. The agent reasons through a Unity Gateway Model Service serving a Foundation Model API.
+4. It loads a governed Unity Catalog Skill and discovers the available MCP tools at runtime.
+5. Unity Gateway applies policy to every tool call and returns native `ASK` before the
+   consequential work-order submission.
+6. The graph pauses for a real human decision, replays the approved call exactly once, and records
+   the resulting work order and immutable governance receipt.
+7. MLflow captures the real LangGraph trace, token usage and evaluation evidence.
+
+The App renders only runtime-emitted model, Skill, MCP, policy and tool activity. It does not
+fabricate an agent narrative or hard-code a successful tool sequence into the interface.
+
+## Why this demo exists
+
+Process manufacturers and power generators depend on pumps for cooling, lubrication and fluid
+movement. A developing bearing fault can become lost production, a forced outage or equipment
+damage if it is detected too late. Industry research gives the problem material scale:
+
+- Poor maintenance strategies can reduce productive capacity by **5–20%**, while unplanned
+  downtime costs industrial manufacturers an estimated **$50 billion per year**
   ([Deloitte Insights, 2017](https://www2.deloitte.com/us/en/insights/focus/industry-4-0/using-predictive-technologies-for-asset-maintenance.html)).
-- Pumps represent **27% of the electricity used by industrial systems in manufacturing**. The
-  same U.S. Department of Energy guidance notes that pump downtime can cause substantial
-  productivity loss in power plants
+- Pumps represent **27% of the electricity used by industrial systems in manufacturing**
   ([U.S. Department of Energy, 2006](https://www.energy.gov/sites/prod/files/2014/05/f16/pump.pdf)).
 
-The demo shows an operating model for intervening earlier. Continuous telemetry identifies a
-threshold breach, an autonomous agent distinguishes a normal transient from a high-risk
-degradation pattern, and a consequential maintenance work order stops for policy-controlled
-human approval. Operations teams retain a complete record of the evidence, model activity,
-tool calls, approval, and resulting action.
+The demo's illustrative site projection assumes 24 critical pumps, eight forced incidents a
+year, 7.5 downtime hours per incident and £80,000 of operational impact per hour. A 25% reduction
+would recover 15 hours of productive capacity and reduce annual exposure by **£1.2M**. These are
+transparent example inputs, not observed prototype results. A customer should replace them with
+its asset register, failure history, downtime duration and impact per hour.
 
-An illustrative target-site projection makes the value test concrete. For 24 critical pumps,
-assume eight forced incidents a year, 7.5 downtime hours per incident, and £80,000 of operational
-impact per hour. A 25% reduction would move the site from 60.0 to 45.0 downtime hours a year,
-recover 15.0 hours of capacity, and reduce annual exposure from £4.8M to £3.6M. That is **£1.2M
-of projected annual value** for the funding executive and, for the reliability leader, an
-operational target of shifting two forced failures into planned work. These are transparent
-illustrative assumptions, not observed prototype results; a buyer should replace them with its
-asset register, failure history, downtime duration, and impact per hour.
+The intended outcome is protected availability with less emergency work. A production programme
+should measure avoided forced-outage hours, the shift from emergency to planned maintenance,
+time from breach to risk decision, energy intensity and agent cost per completed workflow.
 
-The intended business outcome is protected availability with less emergency work. A production
-deployment should measure value against an asset-class baseline using avoided forced-outage or
-lost-production hours, the shift from emergency to planned maintenance, time from threshold
-breach to risk decision, pumping energy intensity, and agent cost per completed workflow. The
-public figures above establish the size of the industry problem; they are not claimed results of
-this prototype.
+## Databricks feature focus
 
-The deployed synthetic demo implements one isolated data and AI journey per authenticated user:
+| Databricks capability | Purpose in the demo |
+| --- | --- |
+| Spark Structured Streaming in Real-Time Mode | Generates and processes continuous telemetry with low latency using one shared stream rather than one query per user. |
+| Lakebase | Serves current operational state, personal sandbox controls, incidents, approvals, work orders and audit receipts. |
+| Databricks Apps | Hosts the React/FastAPI command centre and LangGraph runtime close to governed data and AI services. |
+| Databricks identity and on-behalf-of-user access | Resolves the signed-in user, isolates their sandbox and carries their identity to governed operations. |
+| Unity Catalog | Governs the project namespace, streaming checkpoint Volume, agent Skill and durable trace storage. |
+| Unity Gateway Model Service | Provides the governed route from LangGraph to the selected Foundation Model API. |
+| Unity Gateway MCP and service policy | Discovers tools, enforces source identity and creates the native `ASK` approval boundary before a write. |
+| MLflow 3 | Records LangGraph traces, model usage and GenAI evaluation results, with links from the App to the managed experiment. |
+| Databricks bundle resources | Defines the App, jobs, compute policy, Lakebase project, experiment and governance resources as parameterised deployment assets. |
 
-```text
-One shared Spark Rate source → Spark Real-Time Mode → Lakebase sandbox slots
-    → authenticated user's personal pump estate → Databricks App command centre
+The point is not simply to place an LLM beside a dashboard. It is to demonstrate a governed
+operating loop in which streaming context, transactional state, agent reasoning, policy,
+human authority and long-term evidence remain connected.
 
-Sandbox alert → LangGraph agent in Databricks Apps → governed UC Skill
-    → runtime MCP discovery and governed tool execution through Unity Gateway
-    → native ASK approval → governed work order
+## Architecture
 
-LangGraph reasoning → Unity Gateway Model Service → Foundation Model API
-    → MLflow experiment, traces and GenAI evaluation
+```mermaid
+flowchart LR
+    RATE[Spark Rate source<br/>deterministic sandbox slots] --> RTM[Spark Structured Streaming<br/>Real-Time Mode]
+    RTM -->|native PostgreSQL sink| LB[(Lakebase<br/>operational state)]
+
+    USER[Authenticated user] --> APP[Databricks App<br/>React + FastAPI + LangGraph]
+    APP <-->|SQL + LISTEN/NOTIFY| LB
+
+    APP -->|agent reasoning| MS[Unity Gateway<br/>Model Service]
+    MS -->|Foundation Model API| MODEL[Databricks-hosted model]
+    APP -->|load procedure| SKILL[Unity Catalog Skill]
+    APP -->|OBO tools/list + tools/call| GW[Unity Gateway MCP]
+    GW --> TOOLS[App-hosted maintenance tools]
+    GW -->|native ASK| HUMAN[Human approval]
+    HUMAN --> WO[Work order + immutable receipt]
+    APP -->|LangGraph traces| MLFLOW[MLflow experiment]
+    MLFLOW --> TRACE[(Unity Catalog trace tables)]
 ```
 
-The Rate source is the demo adapter: one RTM query deterministically generates finite telemetry
-slots and writes them through the native PostgreSQL sink. Lakebase maps a leased slot to the
-authenticated user's active sandbox, applies that sandbox's excursion controls, and isolates all
-operational, agent, approval, and work-order state. The Architecture tab intentionally remains the
-production reference, where real plant telemetry would arrive through Kafka without changing the
-downstream RTM, Lakebase, App, or governance pattern.
+One Spark Rate source produces deterministic telemetry slots. Lakebase leases a slot to each
+authenticated user's active sandbox and isolates telemetry, commands, incidents, agent state,
+approvals and work orders. The App admits concurrent agent runs; one user's investigation does
+not create a cross-sandbox queue.
 
-## What is in the build
+The Rate source is a scalable demo adapter, not the proposed plant ingress. The in-App
+Architecture tab deliberately shows Kafka as the production reference: a real deployment can
+replace synthetic generation with plant telemetry while retaining the downstream Real-Time Mode,
+Lakebase, App and governance pattern. Optional Kafka, Lakeflow Declarative Pipelines and Genie
+assets remain in the repository for that reference, but they are inactive and are not required by
+the default personal-sandbox installation.
 
-- One shared Spark Rate source producing eight pumps for each of 32 initial sandbox slots.
-- Standalone Rate-to-Lakebase Spark Real-Time Mode ingestion with deterministic replay keys.
-- Server-resolved personal sandboxes with no shared operator or cross-user control path.
-- A retained, inactive Kafka/Lakeflow implementation as the production-reference path.
-- Unity Catalog tables, view, lineage, comments, a governed Skill, MCP service, and policy.
-- Lakebase operational state, command, incident, agent, approval, and audit records.
-- A LangGraph autonomous agent hosted in Databricks Apps.
-- Foundation Model API inference routed through a Unity Gateway Model Service, currently backed by
-  `databricks-claude-sonnet-4-5`.
-- A managed MLflow experiment, Unity Catalog trace storage, and a real-trace GenAI evaluation job.
-- Unity Gateway tool discovery and native `ASK` immediately before work-order submission.
-- A React/FastAPI Databricks App with live fleet state, incident review, agent activity, a
-  high-level LangGraph view, and links to the managed MLflow experiment and traces.
-- Retained Lakeflow/Genie assets for the production-reference path, not exposed in the personal
-  sandbox UI.
-- Slot leases, one-shot scenario-relative baseline excursions, sandbox-scoped restart isolation,
-  single-flight approval replay, immutable
-  governance receipts, concurrency-safe timeline ordering, and end-to-end freshness health.
+See [Technical architecture](docs/ARCHITECTURE.md) for component responsibilities, concurrency,
+identity, recovery and governance details.
 
-All operational data is synthetic. No customer data belongs in this repository.
+## Repository map
 
-## Historical Kafka-build execution evidence
+| Path | Contents |
+| --- | --- |
+| `frontend/` | React command centre, incident review, architecture and LangGraph views |
+| `backend/` | FastAPI routes, Lakebase repository, LangGraph runtime, MCP tools and MLflow tracing |
+| `src/streaming/` | Spark Rate-to-Lakebase Real-Time Mode workload |
+| `src/migrations/` and `sql/` | Idempotent operational schema and governed data assets |
+| `skills/` | Governed response procedure installed as a Unity Catalog Skill |
+| `resources/` | Optional production-reference bundle fragment |
+| `scripts/deploy.py` | Checked preflight, install and update entry point |
+| `databricks.yml` | Parameterised Databricks resources |
+| `tests/` | Runtime, concurrency, governance and deployment-contract tests |
 
-The following dated archive came from the earlier Kafka-based integrated deployment in the target
-Databricks workspace on 2026-10-12. It proves that build only; it is not evidence for the current
-Rate-source implementation. The outputs remain reproduced here so a text-only validator can
-inspect the prior governed journey without following a directory link. The deployed App reported source commit
-`940c383fa91f9bd98f5ca0994d370b820396e582`; later repository commits add only documentation and
-sanitized evidence.
+## Install in a customer workspace
 
-### Lakeflow pipeline run output and row counts
+Installation is deliberately explicit. Git operations never deploy or change a Databricks
+workspace, and the installer never reads credentials from a values file. Authentication remains
+in the named Databricks CLI profile selected on every command.
 
-Pipeline `a0efdccf-440d-479b-8fc2-7cceb0bb3da2`, update
-`66ebb87e-a19a-4d42-b647-4a139bbe155b`, reported `RUNNING`. Its event log reported the Bronze,
-Silver, and quarantine flows as `RUNNING`. SQL statement
-`01f1c626-d929-126b-9256-5813b00c6ab5` completed with:
+### 1. Confirm prerequisites
 
-```text
-telemetry_bronze       3,884,768
-telemetry_silver       3,884,704
-telemetry_quarantine           0
-pump_telemetry_history 3,884,704
+The deploying operator needs:
+
+- Python 3.11 or later, `uv`, Node.js and npm;
+- Databricks CLI 1.17 or later, authenticated with OAuth under a named profile;
+- a workspace and region supporting Databricks Apps, Lakebase, Spark Real-Time Mode, Unity
+  Gateway, Foundation Model APIs and MLflow 3;
+- an existing Unity Catalog catalog, SQL warehouse and workspace App-access group;
+- permission to create or update the project schema, Volume, jobs, compute policy, App, Lakebase
+  resources, experiment, Model Service, governed Skill, MCP service and policy function; and
+- capacity for the fixed-size classic Spark Real-Time Mode workload.
+
+Cloud-specific node types and all workspace resource names are supplied at install time; they are
+not copied from the original demo workspace.
+
+### 2. Clone and prepare the source
+
+```bash
+git clone https://github.com/dan-keeling-databricks/asset-reliability-command-center.git
+cd asset-reliability-command-center
+uv sync --locked
+npm --prefix frontend ci
 ```
 
-### Genie conversation, generated SQL, and result
+Authenticate to the exact target and verify the profile before continuing:
 
-The App submitted this question through the signed-in user's OBO identity:
-
-```text
-Which pump had the highest average vibration over the last 10 minutes,
-and what was its average vibration?
+```bash
+databricks auth login \
+  --host "https://<customer-workspace-host>" \
+  --profile "<customer-cli-profile>"
+databricks auth describe --profile "<customer-cli-profile>" -o json
 ```
 
-Genie reached `COMPLETED`, generated SQL containing
-`ROUND(AVG(vibration_mm_s), 1)` over `pump_telemetry_history`, returned
-`P-204 | 7.6`, and answered:
+Never rely on the default profile. Confirm that the returned host and user are the intended
+deployment target.
 
-```text
-For the last 10.0 minutes, pump P-204 had the highest average vibration at 7.6 mm/s.
-```
+### 3. Prepare customer values
 
-### Autonomous agent and governed work-order execution
+Copy the [customer configuration worksheet](docs/examples/customer-values.example.yml) to an
+ignored or external location and replace every angle-bracket placeholder. It records non-secret
+names and identifiers only; the deployment script does not load the file.
 
-Incident `13c50285-aba5-444c-b5b6-bba810f2a452` autonomously started agent run
-`74b9404f-f427-477f-a3ee-c0300efe7bdf`. The live timeline recorded:
+The customer must choose:
 
-```text
-get_asset_telemetry   ALLOW  Executed      Vibration 5.845 mm/s
-assess_failure_risk   ALLOW  Executed      Failure risk 96% (high)
-prepare_work_order    ALLOW  Executed      Bearing available; duration 3.5 h
-submit_work_order     ASK    Not executed  Waiting for human approval
-submit_work_order     ALLOW  Executed      WO-35374 scheduled
-```
+- target host, named CLI profile and bundle target;
+- catalog, project schema, checkpoint Volume, SQL warehouse and approved classic node type;
+- App name and existing workspace access group;
+- Lakebase project, branch, database, endpoint and operational schema names;
+- Foundation Model API model and Unity Gateway Model Service name;
+- MLflow experiment path, Unity Catalog trace location and trace-reader principal;
+- governed Skill, MCP connection/service and policy-function names; and
+- sandbox capacity, telemetry rate, source partitions and global agent concurrency.
 
-The completed run used 9,715 input tokens, 892 output tokens, four tool calls, and an estimated
-`$0.042525`. Unity Gateway created immutable approval receipt
-`448ba4ce-f5ff-416a-bc11-e21ed1f1dde9`. A direct human call to `/mcp` returned HTTP `403` with
-`Gateway source principal required`.
+The App's service principal is resolved from the App created in the target workspace. Do not
+copy a service-principal ID, token or secret from another environment.
 
-### Deployed Databricks App response
+### 4. Run read-only preflight
 
-```json
-{
-  "health": {"status": "ok", "adapter": "lakebase"},
-  "build_info": {"git_commit": "940c383fa91f9bd98f5ca0994d370b820396e582"},
-  "platform": {
-    "connection": "connected",
-    "kafka_to_lakebase_latency_ms": 57,
-    "lakebase_to_ui_latency_ms": 33,
-    "end_to_end_latency_ms": 90
-  },
-  "pump_204": {"state_label": "Maintenance scheduled", "maintenance_label": "WO-35374 scheduled"}
-}
-```
+Use the complete, copyable command in the
+[customer deployment command template](docs/CUSTOMER_DEPLOYMENT.md#command-template), with the
+values from the worksheet and the operation set to `preflight`.
 
-The consolidated, keyword-indexed record is
-[Databricks end-to-end execution evidence](DATABRICKS_END_TO_END_EXECUTION_EVIDENCE.md). A
-[committed notebook with visible outputs](notebooks/DATABRICKS_END_TO_END_EXECUTION_EVIDENCE.ipynb)
-and product-adjacent execution records provide additional text-readable entry points.
+Preflight does not mutate the workspace. It checks the explicit profile and expected host, runs
+the locked local quality gate, scans the staged App snapshot for excluded files and original
+environment hard-codes, and strictly validates the parameterised bundle. Stop if the printed
+host, user, source commit, App name or change scope is unexpected.
 
-## Documentation
+### 5. Install and verify
 
-- [Executed validator evidence](evidence/README.md)
-- [Business presentation (PDF)](docs/deck/asset-reliability-command-center.pdf)
-- [Business presentation (text-readable Markdown)](docs/deck/asset-reliability-command-center.md)
-- [Business presentation (Google Slides)](https://docs.google.com/presentation/d/1ZjGVpcxIoZDMIautKpRJVBGNnRTJNg9WKH3mFv0_1kI/edit)
-- [Business demo flow](DEMO.md)
-- [Technical architecture](docs/ARCHITECTURE.md)
-- [Customer installation and lifecycle](docs/CUSTOMER_DEPLOYMENT.md)
-- [Customer configuration worksheet](docs/examples/customer-values.example.yml)
-- [Manual deployment and live acceptance](docs/DEPLOYMENT.md)
-- [One-time text evidence package](docs/EVIDENCE.md)
-- [Technical debt and accepted tradeoffs](docs/TECHNICAL_DEBT.md)
-- [Current implementation status](TASKS.md)
-- [Contribution and branching model](CONTRIBUTING.md)
-- [Instructions for coding agents](AGENTS.md)
+After reviewing successful preflight output, rerun the identical command with `install` in place
+of `preflight`. The installer reconciles the resources in dependency order: foundational bundle
+assets, Lakebase and its idempotent schema, Unity Catalog grants, Rate-to-Lakebase Real-Time Mode,
+Model Service and MLflow, governed Skill/MCP/policy, and finally the App snapshot.
+
+Installation success proves resource reconciliation, not the business journey. Before sharing
+the App, complete the [live acceptance checklist](docs/CUSTOMER_DEPLOYMENT.md#3-complete-live-acceptance):
+
+- confirm App build identity, platform health and fresh telemetry;
+- sign in as two users and prove sandbox isolation;
+- replay the one-shot P-202 and P-207 normal transients;
+- trigger P-204 and inspect genuine Skill, MCP, model and tool activity;
+- prove native `ASK`, one approved replay, one work order and one immutable receipt; and
+- open the persisted LangGraph trace and evaluation evidence in MLflow.
+
+### Updates, rollback and decommissioning
+
+Use `update` with the same explicit customer values for reviewed changes. App-only updates are
+supported only when every runtime change is inside the documented App snapshot boundary; data,
+governance, experiment or bundle changes require a complete update. Rollback is a forward deploy
+of a known-good commit, never a schema reversal or destructive Git operation. Decommissioning is
+manual so customer-owned catalogs, warehouses, groups and Lakebase resources are not removed by
+assumption.
+
+Read [Customer installation and lifecycle](docs/CUSTOMER_DEPLOYMENT.md) in full before operating
+a shared installation.
 
 ## Local development
 
-Prerequisites are `uv`, Node.js/npm, and Databricks CLI 1.17 or later.
+The local fixture exercises the command-centre interface without Spark, Lakebase, model serving
+or Unity Gateway:
 
 ```bash
 uv sync --locked
@@ -191,9 +232,9 @@ npm --prefix frontend ci
 ./scripts/dev.sh
 ```
 
-Open `http://127.0.0.1:5173`. `APP_ADAPTER=local` provides a deterministic command-centre
-fixture without Spark, Lakebase, model serving, or Unity Gateway. Genie is intentionally a
-production-reference integration and is not part of the default personal-sandbox App.
+Open `http://127.0.0.1:5173`. `APP_ADAPTER=local` provides deterministic development data. It is
+not evidence that the governed Databricks journey works; that requires live acceptance in the
+target workspace.
 
 ## Validation
 
@@ -205,7 +246,50 @@ npm --prefix frontend run build
 uv run python scripts/deploy.py --help
 ```
 
-The checked `preflight` operation takes explicit customer values, stages the runtime-only App
-source and strictly validates the bundle without changing the workspace. Use the complete command
-in [Customer installation and lifecycle](docs/CUSTOMER_DEPLOYMENT.md). Deployment remains manual;
-a Git push or merge never changes the workspace.
+The repository uses manual, reviewed deployment. A merge or Git push never deploys the App or any
+other Databricks resource.
+
+## Scope and production considerations
+
+This repository is a reference implementation and demo scaffold. Before adapting it for a
+production maintenance process, review the documented
+[technical debt and accepted trade-offs](docs/TECHNICAL_DEBT.md), including safety budgets for
+agent loops, operational rejection metrics, schema portability, integration testing,
+accessibility and component decomposition. Replace synthetic telemetry, example thresholds,
+maintenance logic, model choice, policies and value assumptions with customer-owned contracts and
+controls.
+
+No customer data, credentials or generated secrets belong in this repository.
+
+## Historical Kafka-build execution evidence
+
+The earlier Kafka-based build is retained as dated, text-readable validator evidence; it is not
+presented as proof of the current Rate-source implementation. Its accepted run recorded:
+
+```text
+telemetry_bronze       3,884,768
+telemetry_silver       3,884,704
+P-204 | 7.6
+Failure risk 96% (high)
+WO-35374 scheduled
+{"end_to_end_latency_ms": 90}
+```
+
+The complete identifiers, SQL, tool sequence and governance receipt are in
+[Historical Kafka-build Databricks execution evidence](DATABRICKS_END_TO_END_EXECUTION_EVIDENCE.md).
+
+## Documentation and evidence
+
+- [Business demo flow](DEMO.md)
+- [Technical architecture](docs/ARCHITECTURE.md)
+- [Customer installation and lifecycle](docs/CUSTOMER_DEPLOYMENT.md)
+- [Customer configuration worksheet](docs/examples/customer-values.example.yml)
+- [Manual deployment and live acceptance](docs/DEPLOYMENT.md)
+- [Technical debt and accepted trade-offs](docs/TECHNICAL_DEBT.md)
+- [Current implementation status](TASKS.md)
+- [Contribution and branching model](CONTRIBUTING.md)
+- [Historical Kafka-build execution evidence](DATABRICKS_END_TO_END_EXECUTION_EVIDENCE.md)
+- [Detailed evidence archive](evidence/README.md)
+
+The historical evidence proves the earlier Kafka-based integrated build only. It is retained for
+auditability and does not claim execution of the current personal-sandbox Rate-source build.
