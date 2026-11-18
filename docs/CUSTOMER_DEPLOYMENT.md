@@ -69,6 +69,8 @@ Important choices:
   Rate stream, not one Spark query per user.
 - Select an available classic compute node type for the target cloud and region. The bundle does
   not embed AWS or Azure instance families.
+- Use a production-mode bundle target for a shared installation so explicit customer resource
+  names are preserved without per-developer prefixes.
 - Keep the initial Rate settings at two samples per second per pump and four source partitions
   unless load testing justifies a change.
 - Select a Foundation Model API model that is available in the target region.

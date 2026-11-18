@@ -221,6 +221,14 @@ def test_customer_guide_documents_the_complete_installer_contract() -> None:
     assert "`install --app-only` is rejected" in guide
 
 
+def test_bundle_has_a_production_mode_target_for_shared_installations() -> None:
+    """Prevent development-mode prefixes from changing explicit customer resource names."""
+
+    bundle = (ROOT / "databricks.yml").read_text(encoding="utf-8")
+
+    assert "  prod:\n    mode: production" in bundle
+
+
 def test_readme_links_customer_installation_guide() -> None:
     """Expose the portable lifecycle guide from the repository's primary entry point."""
 
