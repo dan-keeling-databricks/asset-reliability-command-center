@@ -28,7 +28,7 @@ from databricks.sdk import WorkspaceClient
 
 dbutils.widgets.text(
     "lakebase_endpoint",
-    "projects/asset-reliability-command-center/branches/production/endpoints/primary",
+    "",
 )
 dbutils.widgets.text("lakebase_database", "databricks_postgres")
 dbutils.widgets.text("lakebase_schema", "asset_reliability")
@@ -62,6 +62,8 @@ REQUIRED_TABLES = {
 
 if not re.fullmatch(r"[a-z_][a-z0-9_]*", LAKEBASE_SCHEMA):
     raise ValueError("lakebase_schema must be a simple PostgreSQL identifier")
+if not LAKEBASE_ENDPOINT:
+    raise ValueError("lakebase_endpoint is required")
 if SANDBOX_CAPACITY <= 0:
     raise ValueError("sandbox_capacity must be positive")
 

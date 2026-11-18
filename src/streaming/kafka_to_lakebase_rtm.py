@@ -51,14 +51,14 @@ from pyspark.sql.types import (
 
 # COMMAND ----------
 
-dbutils.widgets.text("catalog", "classic_stable_realtime_demos_catalog")
-dbutils.widgets.text("schema", "asset_reliability_command_center")
+dbutils.widgets.text("catalog", "")
+dbutils.widgets.text("schema", "")
 dbutils.widgets.text("volume", "runtime")
 dbutils.widgets.text("kafka_bootstrap", "63.186.81.193:443")
 dbutils.widgets.text("kafka_topic", "asset-reliability-pump-telemetry")
 dbutils.widgets.text(
     "lakebase_endpoint",
-    "projects/asset-reliability-command-center/branches/production/endpoints/primary",
+    "",
 )
 dbutils.widgets.text("lakebase_database", "databricks_postgres")
 dbutils.widgets.text("lakebase_table", "asset_reliability.telemetry_events")
@@ -94,6 +94,10 @@ DIAGNOSTIC_SECONDS = int(dbutils.widgets.get("diagnostic_seconds"))
 for identifier in (CATALOG, SCHEMA, VOLUME):
     if not re.fullmatch(r"[a-z_][a-z0-9_]*", identifier):
         raise ValueError(f"Invalid Unity Catalog identifier: {identifier}")
+if not KAFKA_BOOTSTRAP:
+    raise ValueError("kafka_bootstrap is required")
+if not LAKEBASE_ENDPOINT:
+    raise ValueError("lakebase_endpoint is required")
 if not re.fullmatch(r"[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*", LAKEBASE_TABLE):
     raise ValueError("lakebase_table must be schema.table using simple identifiers")
 
