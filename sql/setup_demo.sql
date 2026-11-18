@@ -3,7 +3,7 @@
 -- and proposal preparation remain autonomous. The final SELECT is a deployment smoke test.
 
 CREATE OR REPLACE FUNCTION
-  classic_stable_realtime_demos_catalog.asset_reliability_command_center.submit_work_order_policy(
+  IDENTIFIER(:policy_function_fqn)(
     event VARIANT
   )
 RETURNS VARIANT
@@ -20,7 +20,7 @@ RETURN CASE
 END;
 
 SELECT to_json(
-  classic_stable_realtime_demos_catalog.asset_reliability_command_center.submit_work_order_policy(
+  IDENTIFIER(:policy_function_fqn)(
     parse_json(
       '{"type":"request","context":{"tool":{"name":"submit_work_order"}}}'
     )

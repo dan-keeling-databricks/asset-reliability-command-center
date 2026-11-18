@@ -25,7 +25,7 @@
   "data_sources": {
     "tables": [
       {
-        "identifier": "classic_stable_realtime_demos_catalog.asset_reliability_command_center.pump_telemetry_history",
+        "identifier": "{{catalog}}.{{schema}}.pump_telemetry_history",
         "column_configs": [
           {
             "column_name": "bearing_temperature_c",
@@ -129,7 +129,7 @@
           "Which pumps had the highest average vibration in the last 15 minutes?"
         ],
         "sql": [
-          "SELECT telemetry.pump_id, ROUND(AVG(telemetry.vibration_mm_s), 1) AS average_vibration_mm_s FROM classic_stable_realtime_demos_catalog.asset_reliability_command_center.pump_telemetry_history AS telemetry WHERE telemetry.event_time >= current_timestamp() - INTERVAL 15 MINUTES GROUP BY telemetry.pump_id ORDER BY average_vibration_mm_s DESC"
+          "SELECT telemetry.pump_id, ROUND(AVG(telemetry.vibration_mm_s), 1) AS average_vibration_mm_s FROM {{catalog}}.{{schema}}.pump_telemetry_history AS telemetry WHERE telemetry.event_time >= current_timestamp() - INTERVAL 15 MINUTES GROUP BY telemetry.pump_id ORDER BY average_vibration_mm_s DESC"
         ]
       },
       {
@@ -138,7 +138,7 @@
           "Show vibration and bearing temperature for P-204 over the last 10 minutes."
         ],
         "sql": [
-          "SELECT telemetry.event_time, ROUND(telemetry.vibration_mm_s, 1) AS vibration_mm_s, ROUND(telemetry.bearing_temperature_c, 1) AS bearing_temperature_c FROM classic_stable_realtime_demos_catalog.asset_reliability_command_center.pump_telemetry_history AS telemetry WHERE telemetry.pump_id = 'P-204' AND telemetry.event_time >= current_timestamp() - INTERVAL 10 MINUTES ORDER BY telemetry.event_time"
+          "SELECT telemetry.event_time, ROUND(telemetry.vibration_mm_s, 1) AS vibration_mm_s, ROUND(telemetry.bearing_temperature_c, 1) AS bearing_temperature_c FROM {{catalog}}.{{schema}}.pump_telemetry_history AS telemetry WHERE telemetry.pump_id = 'P-204' AND telemetry.event_time >= current_timestamp() - INTERVAL 10 MINUTES ORDER BY telemetry.event_time"
         ]
       },
       {
@@ -147,7 +147,7 @@
           "Compare average operating measurements by pump for the last hour."
         ],
         "sql": [
-          "SELECT telemetry.pump_id, ROUND(AVG(telemetry.flow_m3h), 1) AS average_flow_m3h, ROUND(AVG(telemetry.discharge_pressure_bar), 1) AS average_discharge_pressure_bar, ROUND(AVG(telemetry.vibration_mm_s), 1) AS average_vibration_mm_s, ROUND(AVG(telemetry.bearing_temperature_c), 1) AS average_bearing_temperature_c, ROUND(AVG(telemetry.motor_current_a), 1) AS average_motor_current_a FROM classic_stable_realtime_demos_catalog.asset_reliability_command_center.pump_telemetry_history AS telemetry WHERE telemetry.event_time >= current_timestamp() - INTERVAL 1 HOUR GROUP BY telemetry.pump_id ORDER BY telemetry.pump_id"
+          "SELECT telemetry.pump_id, ROUND(AVG(telemetry.flow_m3h), 1) AS average_flow_m3h, ROUND(AVG(telemetry.discharge_pressure_bar), 1) AS average_discharge_pressure_bar, ROUND(AVG(telemetry.vibration_mm_s), 1) AS average_vibration_mm_s, ROUND(AVG(telemetry.bearing_temperature_c), 1) AS average_bearing_temperature_c, ROUND(AVG(telemetry.motor_current_a), 1) AS average_motor_current_a FROM {{catalog}}.{{schema}}.pump_telemetry_history AS telemetry WHERE telemetry.event_time >= current_timestamp() - INTERVAL 1 HOUR GROUP BY telemetry.pump_id ORDER BY telemetry.pump_id"
         ]
       }
     ],

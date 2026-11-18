@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import time
+from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
 from urllib.parse import urlparse
@@ -23,34 +24,77 @@ from databricks.sdk.service.catalog import (
 
 from backend.gateway import GatewayAsk, GovernedGatewayClient
 
-PROFILE = os.getenv("DATABRICKS_CONFIG_PROFILE", "fe_vm_rtm")
-CATALOG = "classic_stable_realtime_demos_catalog"
-SCHEMA = "asset_reliability_command_center"
-PARENT = f"schemas/{CATALOG}.{SCHEMA}"
-APP_NAME = "asset-reliability-center"
-SKILL_ID = "asset-reliability-response"
-SKILL_FQN = f"{CATALOG}.{SCHEMA}.{SKILL_ID}"
-CONNECTION_ID = "asset_reliability_mcp_connection"
-# MCP source connections must be workspace/metastore-root connections. A schema-level
-# connection can acquire an OAuth token but does not materialize the credential that the
-# Gateway MCP runtime looks up for source calls.
-CONNECTION_FQN = CONNECTION_ID
-SERVICE_ID = "asset_reliability_mcp"
-SERVICE_FQN = f"{CATALOG}.{SCHEMA}.{SERVICE_ID}"
-POLICY_FQN = f"{CATALOG}.{SCHEMA}.submit_work_order_policy"
 TOOLS = [
     "get_asset_telemetry",
     "assess_failure_risk",
     "prepare_work_order",
     "submit_work_order",
 ]
-UC_AUDIENCE = os.getenv("ASSET_RELIABILITY_UC_AUDIENCE", "account users")
 
 
-def ensure_source_app_permission(client: WorkspaceClient, app) -> bool:
+@dataclass(frozen=True)
+class GovernanceConfig:
+    """Explicit, customer-owned names for governed deployment resources."""
+
+    profile: str
+    catalog: str
+    schema: str
+    app_name: str
+    skill_id: str
+    connection_id: str
+    service_id: str
+    policy_function_name: str
+    uc_audience: str
+
+    @property
+    def parent(self) -> str:
+        return f"schemas/{self.catalog}.{self.schema}"
+
+    @property
+    def skill_fqn(self) -> str:
+        return f"{self.catalog}.{self.schema}.{self.skill_id}"
+
+    @property
+    def connection_fqn(self) -> str:
+        # MCP source connections are workspace/metastore-root connections.
+        return self.connection_id
+
+    @property
+    def service_fqn(self) -> str:
+        return f"{self.catalog}.{self.schema}.{self.service_id}"
+
+    @property
+    def policy_fqn(self) -> str:
+        return f"{self.catalog}.{self.schema}.{self.policy_function_name}"
+
+    @classmethod
+    def from_environment(cls) -> GovernanceConfig:
+        names = {
+            "profile": "DATABRICKS_CONFIG_PROFILE",
+            "catalog": "ASSET_RELIABILITY_CATALOG",
+            "schema": "ASSET_RELIABILITY_SCHEMA",
+            "app_name": "ASSET_RELIABILITY_APP_NAME",
+            "skill_id": "ASSET_RELIABILITY_SKILL_ID",
+            "connection_id": "ASSET_RELIABILITY_MCP_CONNECTION_ID",
+            "service_id": "ASSET_RELIABILITY_MCP_SERVICE_ID",
+            "policy_function_name": "ASSET_RELIABILITY_POLICY_FUNCTION_NAME",
+            "uc_audience": "ASSET_RELIABILITY_UC_AUDIENCE",
+        }
+        values = {field: os.getenv(variable, "").strip() for field, variable in names.items()}
+        missing = [names[field] for field, value in values.items() if not value]
+        if missing:
+            raise RuntimeError(
+                "Missing explicit governance deployment settings: " + ", ".join(missing)
+            )
+        return cls(**values)
+
+
+def ensure_source_app_permission(
+    client: WorkspaceClient, app, config: GovernanceConfig
+) -> bool:
     """Allow the connection's M2M principal through the Databricks App boundary."""
 
-    permissions = client.apps.get_permissions(APP_NAME)
+    permissions = client.apps.get_permissions(config.app_name)
     for entry in permissions.access_control_list or []:
         if entry.service_principal_name != app.service_principal_client_id:
             continue
@@ -59,7 +103,7 @@ def ensure_source_app_permission(client: WorkspaceClient, app) -> bool:
             return False
 
     client.apps.update_permissions(
-        APP_NAME,
+        config.app_name,
         access_control_list=[
             AppAccessControlRequest(
                 service_principal_name=app.service_principal_client_id,
@@ -70,29 +114,29 @@ def ensure_source_app_permission(client: WorkspaceClient, app) -> bool:
     return True
 
 
-def deploy_skill(client: WorkspaceClient) -> dict[str, object]:
+def deploy_skill(client: WorkspaceClient, config: GovernanceConfig) -> dict[str, object]:
     """Create the governed Skill if needed, upload all source files, and finalize it."""
 
     try:
-        client.api_client.do("GET", f"/api/2.1/unity-catalog/skills/{SKILL_FQN}")
+        client.api_client.do("GET", f"/api/2.1/unity-catalog/skills/{config.skill_fqn}")
         created = False
     except NotFound:
         client.api_client.do(
             "POST",
             "/api/2.1/unity-catalog/skills",
-            query={"parent": PARENT, "skill_id": SKILL_ID},
+            query={"parent": config.parent, "skill_id": config.skill_id},
             body={"comment": "Evidence-led response procedure for autonomous asset anomalies"},
         )
         created = True
 
-    skill_directory = Path(__file__).parents[1] / "skills" / SKILL_ID
+    skill_directory = Path(__file__).parents[1] / "skills" / config.skill_id
     uploaded: list[str] = []
     for local_path in skill_directory.rglob("*"):
         if not local_path.is_file():
             continue
         relative_path = local_path.relative_to(skill_directory).as_posix()
         client.files.upload(
-            f"/Skills/{CATALOG}/{SCHEMA}/{SKILL_ID}/{relative_path}",
+            f"/Skills/{config.catalog}/{config.schema}/{config.skill_id}/{relative_path}",
             BytesIO(local_path.read_bytes()),
             overwrite=True,
         )
@@ -100,7 +144,7 @@ def deploy_skill(client: WorkspaceClient) -> dict[str, object]:
 
     finalized = client.api_client.do(
         "POST",
-        f"/api/2.1/unity-catalog/skills/{SKILL_FQN}/finalize",
+        f"/api/2.1/unity-catalog/skills/{config.skill_fqn}/finalize",
         body={},
     )
     return {"created": created, "uploaded": uploaded, "name": finalized.get("name")}
@@ -142,11 +186,13 @@ def _connection_provisioning_failed(connection) -> bool:
     return getattr(provisioning_info, "state", None) == ProvisioningInfoState.FAILED
 
 
-def ensure_connection(client: WorkspaceClient, app) -> tuple[object, str]:
+def ensure_connection(
+    client: WorkspaceClient, app, config: GovernanceConfig
+) -> tuple[object, str]:
     """Create or reconcile the App-backed MCP source connection."""
 
     try:
-        connection = client.connections.get(CONNECTION_FQN)
+        connection = client.connections.get(config.connection_fqn)
     except NotFound:
         # The generated secret is passed directly to the connection API and is never logged or
         # persisted in the source tree.
@@ -155,7 +201,7 @@ def ensure_connection(client: WorkspaceClient, app) -> tuple[object, str]:
         )
         try:
             connection = client.connections.create(
-                name=CONNECTION_ID,
+                name=config.connection_id,
                 connection_type=ConnectionType.HTTP,
                 comment="App-hosted maintenance MCP tools for Asset Reliability",
                 read_only=False,
@@ -176,7 +222,7 @@ def ensure_connection(client: WorkspaceClient, app) -> tuple[object, str]:
     )
     try:
         connection = client.connections.update(
-            CONNECTION_FQN,
+            config.connection_fqn,
             _connection_options(client, app, secret.secret),
         )
     except Exception:
@@ -185,15 +231,15 @@ def ensure_connection(client: WorkspaceClient, app) -> tuple[object, str]:
     return connection, "recovered" if connection_failed else "updated"
 
 
-def _service_config(function_id: str) -> dict[str, object]:
+def _service_config(function_id: str, config: GovernanceConfig) -> dict[str, object]:
     return {
-        "source_connection": {"name": f"connections/{CONNECTION_FQN}"},
+        "source_connection": {"name": f"connections/{config.connection_fqn}"},
         "include_tool_selectors": TOOLS,
         "service_policies": [
             {
                 "name": "submit_work_order_requires_approval",
                 "policy_type": "POLICY_TYPE_CUSTOM",
-                "handler": f"functions/{POLICY_FQN}",
+                "handler": f"functions/{config.policy_fqn}",
                 "function_id": function_id,
                 "rank": 1,
             }
@@ -237,21 +283,24 @@ def _service_config_matches(actual: dict[str, object], desired: dict[str, object
 def ensure_service(
     client: WorkspaceClient,
     function_id: str,
+    config: GovernanceConfig,
     *,
     max_attempts: int = 6,
     retry_delay_seconds: float = 0.5,
 ) -> tuple[dict, str]:
     """Create or reconcile the service, verifying PATCH propagation with fresh GETs."""
 
-    desired = _service_config(function_id)
+    desired = _service_config(function_id, config)
 
     try:
-        service = client.api_client.do("GET", f"/api/2.1/unity-catalog/mcp-services/{SERVICE_FQN}")
+        service = client.api_client.do(
+            "GET", f"/api/2.1/unity-catalog/mcp-services/{config.service_fqn}"
+        )
     except NotFound:
         service = client.api_client.do(
             "POST",
             "/api/2.1/unity-catalog/mcp-services",
-            query={"parent": PARENT, "mcp_service_id": SERVICE_ID},
+            query={"parent": config.parent, "mcp_service_id": config.service_id},
             body={
                 "comment": "Governed tools for the Asset Reliability Command Center",
                 "config": desired,
@@ -264,11 +313,13 @@ def ensure_service(
     for attempt in range(max_attempts):
         client.api_client.do(
             "PATCH",
-            f"/api/2.1/unity-catalog/mcp-services/{SERVICE_FQN}",
+            f"/api/2.1/unity-catalog/mcp-services/{config.service_fqn}",
             query={"update_mask": "config"},
             body={"config": desired},
         )
-        service = client.api_client.do("GET", f"/api/2.1/unity-catalog/mcp-services/{SERVICE_FQN}")
+        service = client.api_client.do(
+            "GET", f"/api/2.1/unity-catalog/mcp-services/{config.service_fqn}"
+        )
         if _service_config_matches(service.get("config") or {}, desired):
             return service, "updated"
         if attempt + 1 < max_attempts:
@@ -276,7 +327,9 @@ def ensure_service(
     raise RuntimeError("Unity Gateway service did not converge to the declared configuration")
 
 
-def ensure_user_permissions(client: WorkspaceClient) -> list[str]:
+def ensure_user_permissions(
+    client: WorkspaceClient, config: GovernanceConfig
+) -> list[str]:
     """Grant the App's broad audience only the UC privileges needed by the agent.
 
     Databricks Apps admits the workspace-local ``users`` group. Unity Catalog uses the special
@@ -285,17 +338,17 @@ def ensure_user_permissions(client: WorkspaceClient) -> list[str]:
     """
 
     grants = (
-        (SecurableType.CATALOG, CATALOG, Privilege.USE_CATALOG),
-        (SecurableType.SCHEMA, f"{CATALOG}.{SCHEMA}", Privilege.USE_SCHEMA),
-        (SecurableType.SKILL, SKILL_FQN, Privilege.READ_VOLUME),
-        (SecurableType.MCP_SERVICE, SERVICE_FQN, Privilege.EXECUTE),
+        (SecurableType.CATALOG, config.catalog, Privilege.USE_CATALOG),
+        (SecurableType.SCHEMA, f"{config.catalog}.{config.schema}", Privilege.USE_SCHEMA),
+        (SecurableType.SKILL, config.skill_fqn, Privilege.READ_VOLUME),
+        (SecurableType.MCP_SERVICE, config.service_fqn, Privilege.EXECUTE),
     )
     applied: list[str] = []
     for securable_type, full_name, privilege in grants:
         client.grants.update(
             securable_type.value,
             full_name,
-            changes=[PermissionsChange(principal=UC_AUDIENCE, add=[privilege])],
+            changes=[PermissionsChange(principal=config.uc_audience, add=[privilege])],
         )
         applied.append(f"{securable_type.value}:{full_name}:{privilege.value}")
     return applied
@@ -303,6 +356,7 @@ def ensure_user_permissions(client: WorkspaceClient) -> list[str]:
 
 async def probe_submit_policy(
     client: WorkspaceClient,
+    config: GovernanceConfig,
     *,
     max_attempts: int = 6,
     retry_delay_seconds: float = 0.5,
@@ -317,7 +371,7 @@ async def probe_submit_policy(
     token = authorization.removeprefix("Bearer ").strip()
     if not token:
         raise RuntimeError("Unable to obtain an OAuth token for the policy probe")
-    gateway_url = f"{client.config.host}/ai-gateway/mcp-services/{SERVICE_FQN}"
+    gateway_url = f"{client.config.host}/ai-gateway/mcp-services/{config.service_fqn}"
     gateway = GovernedGatewayClient(gateway_url)
     try:
         for attempt in range(max_attempts):
@@ -371,18 +425,19 @@ async def probe_submit_policy(
 def main() -> None:
     """Deploy governance dependencies in their required dependency order."""
 
-    client = WorkspaceClient(profile=PROFILE)
-    app = client.apps.get(APP_NAME)
+    config = GovernanceConfig.from_environment()
+    client = WorkspaceClient(profile=config.profile)
+    app = client.apps.get(config.app_name)
     if not app.url or not app.service_principal_id or not app.service_principal_client_id:
         raise RuntimeError("Deploy and start the Databricks App before configuring governance")
 
-    function = client.functions.get(POLICY_FQN)
-    app_permission_created = ensure_source_app_permission(client, app)
-    skill = deploy_skill(client)
-    connection, connection_status = ensure_connection(client, app)
-    service, service_status = ensure_service(client, function.function_id)
-    user_permissions = ensure_user_permissions(client)
-    policy_probe = asyncio.run(probe_submit_policy(client))
+    function = client.functions.get(config.policy_fqn)
+    app_permission_created = ensure_source_app_permission(client, app, config)
+    skill = deploy_skill(client, config)
+    connection, connection_status = ensure_connection(client, app, config)
+    service, service_status = ensure_service(client, function.function_id, config)
+    user_permissions = ensure_user_permissions(client, config)
+    policy_probe = asyncio.run(probe_submit_policy(client, config))
 
     print(
         json.dumps(
@@ -394,8 +449,10 @@ def main() -> None:
                 "service": service.get("name"),
                 "service_status": service_status,
                 "user_permissions": user_permissions,
-                "gateway_url": f"{client.config.host}/ai-gateway/mcp-services/{SERVICE_FQN}",
-                "policy": POLICY_FQN,
+                "gateway_url": (
+                    f"{client.config.host}/ai-gateway/mcp-services/{config.service_fqn}"
+                ),
+                "policy": config.policy_fqn,
                 "tools": TOOLS,
                 "policy_probe": policy_probe,
             },

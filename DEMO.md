@@ -30,10 +30,11 @@ faster detection, fewer emergency repairs, and a complete audit trail from measu
    bearing vibration. The one-second App evaluator detects the threshold crossing and launches
    the same autonomous workflow.
 
-5. The single Claude Sonnet 4.5 agent uses the governed response Skill, discovers tools on the
-   configured `asset_reliability_mcp` service, and assesses a high likelihood of failure before
-   the next maintenance window. Tool choice and call count are runtime decisions, not scripted
-   UI stages.
+5. The LangGraph agent uses the governed response Skill, discovers tools on the configured
+   `asset_reliability_mcp` service, and assesses a high likelihood of failure before the next
+   maintenance window. Model reasoning reaches Claude Sonnet 4.5 through the Unity Gateway Model
+   Service and Foundation Model API. Tool choice and call count are runtime decisions, not
+   scripted UI stages.
 
 6. Immediately before `submit_work_order`, Unity Gateway returns native `ASK`. The activity card
    says the action was not executed, and the agent stops. Follow the real Gateway handoff and
@@ -47,7 +48,8 @@ faster detection, fewer emergency repairs, and a complete audit trail from measu
 8. Close on the complete journey: a shared RTM workload efficiently serves many isolated personal
    sandboxes, while every consequential write still stops at a policy-controlled human decision.
    The Architecture tab shows how production plant telemetry would replace the synthetic Rate
-   adapter with Kafka while preserving the downstream design.
+   adapter with Kafka while preserving the downstream design. The Agent graph tab shows the
+   high-level LangGraph and links to its managed MLflow experiment and real traces.
 
 ## Experience invariants
 

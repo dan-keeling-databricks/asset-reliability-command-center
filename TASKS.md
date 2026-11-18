@@ -14,8 +14,9 @@ existing `classic_stable_realtime_demos_catalog` and dedicated
 | Production reference | Retained Kafka and governed-history assets, inactive in the synthetic demo | Complete |
 | Lakebase | Live telemetry, current state, commands, incidents, runs, activities, work orders, identities, and heartbeats | Complete |
 | Lakebase | Concurrency-safe ordering, approval replay lease, and immutable governance receipts | Complete |
-| Autonomous AI | Alert-generated prompts and up to 20 concurrent code-defined agent runs, including within one sandbox | Complete |
-| Autonomous AI | Single `databricks-claude-sonnet-4-5` model for the complete workflow | Complete |
+| Autonomous AI | Alert-generated prompts and up to 20 concurrent LangGraph runs, including within one sandbox | Complete |
+| Autonomous AI | Unity Gateway Model Service routing to the selected Foundation Model API | Complete |
+| Observability | Managed MLflow experiment, UC traces, real-trace GenAI evaluation and App links | Complete |
 | Governance | One configured MCP service with runtime `tools/list` discovery | Complete |
 | Governance | Source MCP restricted to the App service principal | Complete |
 | Governance | Reconciled selectors and native `ASK` policy with non-executing probe | Complete |
@@ -23,7 +24,7 @@ existing `classic_stable_realtime_demos_catalog` and dedicated
 | Production reference | Reproducible telemetry-only Genie definition and OBO adapter retained but hidden | Complete |
 | App | Personal live fleet, alerting, autonomous activity, history and incident timeline | Complete |
 | App | End-to-end health from connectivity, Rate RTM, telemetry and evaluator freshness | Complete |
-| Deployment | Checked manual deployment entry point and build provenance generation | Complete |
+| Deployment | Customer-portable bundle, generated App manifest and checked lifecycle entry point | Complete |
 | Documentation | Architecture, demo, deployment, debt, and evidence plan reconciled | Complete |
 
 ## Validation state
@@ -35,7 +36,7 @@ uv run ruff check backend tests src scripts
 uv run pytest
 npm --prefix frontend run typecheck
 npm --prefix frontend run build
-databricks bundle validate --target dev --profile fe_vm_rtm
+databricks bundle validate --strict --target dev --profile fe_vm_rtm <explicit --var values>
 ```
 
 The feature commits on which this documentation is based include:
@@ -43,19 +44,19 @@ The feature commits on which this documentation is based include:
 - governed SQL pipeline and reproducible Genie Agent;
 - OBO Genie App integration;
 - governed runtime and deployment reconciliation hardening;
-- complete single-model consolidation.
+- governed LangGraph, Model Service and MLflow evaluation integration.
 
 ## Deployment state
 
 The earlier Kafka command-centre build is deployed, with producer job `952037348530266` and RTM
 job `17156207332698`. The personal-sandbox Rate-source redesign must not be marked deployed until
-`scripts/deploy.py --execute` and the current
+`scripts/deploy.py update` and the current
 [live acceptance checklist](docs/DEPLOYMENT.md) complete against the merged commit.
 
 After that acceptance, replace this section with the actual:
 
 - merged Git commit and App deployment ID;
-- Rate RTM parent/task run IDs and proof that obsolete continuous jobs are stopped;
+- Rate RTM parent/task run IDs and proof that optional production-reference jobs are absent or paused;
 - two distinct sandbox, slot and scenario IDs;
 - independent incident, work-order and governance-receipt IDs;
 - App health/build-info output and observed latency;

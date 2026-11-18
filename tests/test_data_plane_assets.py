@@ -11,12 +11,51 @@ import pytest
 
 from scripts import deploy_data_plane
 
+
+def deployment_args(**overrides) -> Namespace:
+    values = {
+        "profile": "explicit-profile",
+        "target": "dev",
+        "access_group": "existing-group",
+        "app_service_principal_client_id": "existing-app-sp",
+        "catalog": "catalog",
+        "schema": "schema",
+        "volume": "runtime",
+        "warehouse_id": "warehouse-123",
+        "workspace_host": "https://workspace.example",
+        "app_name": "customer-app",
+        "lakebase_project_id": "customer-project",
+        "lakebase_branch": "main",
+        "lakebase_database": "customer-database",
+        "lakebase_database_resource_name": "customer-database-resource",
+        "lakebase_endpoint_name": "primary",
+        "lakebase_schema": "asset_reliability",
+        "foundation_model": "system.ai.customer-model",
+        "model_service_name": "agent-model",
+        "mlflow_experiment_name": "/Shared/customer-agent",
+        "mlflow_trace_catalog": "catalog",
+        "mlflow_trace_schema": "agent_traces",
+        "mlflow_trace_table_prefix": "customer_agent",
+        "mcp_service_name": "asset_reliability_mcp",
+        "governed_skill_name": "asset-reliability-response",
+        "policy_function_name": "submit_work_order_policy",
+        "global_agent_concurrency": 20,
+        "sandbox_capacity": 40,
+        "telemetry_samples_per_second": 2,
+        "telemetry_source_partitions": 4,
+        "timeout_seconds": 60,
+        "poll_seconds": 0,
+    }
+    values.update(overrides)
+    return Namespace(**values)
+
 ROOT = Path(__file__).resolve().parents[1]
 PIPELINE = ROOT / "src" / "pipelines" / "governed_telemetry_history.sql"
 RATE_RTM = ROOT / "src" / "streaming" / "rate_to_lakebase_rtm.py"
 KAFKA_RTM_REFERENCE = ROOT / "src" / "streaming" / "kafka_to_lakebase_rtm.py"
 LAKEBASE_MIGRATION = ROOT / "src" / "migrations" / "apply_lakebase_schema.py"
-GENIE = ROOT / "genie" / "fleet_telemetry_analyst.geniespace.json"
+GENIE = ROOT / "genie" / "fleet_telemetry_analyst.geniespace.json.template"
+PRODUCTION_REFERENCE = ROOT / "resources" / "production_reference.yml"
 
 
 def test_pipeline_is_documented_sql_with_required_datasets() -> None:
@@ -69,8 +108,7 @@ def test_genie_is_limited_to_the_curated_telemetry_view() -> None:
     tables = definition["data_sources"]["tables"]
 
     assert len(tables) == 1
-    assert "${" not in tables[0]["identifier"]
-    assert tables[0]["identifier"].endswith(".pump_telemetry_history")
+    assert tables[0]["identifier"] == "{{catalog}}.{{schema}}.pump_telemetry_history"
     assert [item["column_name"] for item in tables[0]["column_configs"]] == sorted(
         item["column_name"] for item in tables[0]["column_configs"]
     )
@@ -131,22 +169,29 @@ def test_genie_formats_numeric_answers_to_one_decimal_place() -> None:
 
 def test_bundle_uses_classic_pipeline_native_genie_and_obo_scope() -> None:
     bundle = (ROOT / "databricks.yml").read_text()
-    app = (ROOT / "app.yaml").read_text()
+    production_reference = PRODUCTION_REFERENCE.read_text()
+    combined_resources = bundle + production_reference
+    app = (ROOT / "app.yaml.template").read_text()
 
-    assert "governed_telemetry_history:" in bundle
+    assert "governed_telemetry_history:" not in bundle
+    assert "governed_telemetry_history:" in production_reference
     assert 'databricks_cli_version: ">=1.17.0"' in bundle
-    assert "serverless: false" in bundle
-    assert "continuous: true" not in bundle
-    assert "governed_telemetry_history_continuous:" in bundle
-    assert "pipeline_id: ${resources.pipelines.governed_telemetry_history.id}" in bundle
-    assert bundle.count("pause_status: UNPAUSED") == 1
-    assert bundle.count("pause_status: PAUSED") == 2
-    assert "level: CAN_RUN" in bundle
-    assert "node_type_id: ${var.telemetry_pipeline_node_type}" in bundle
-    assert "fleet_telemetry_analyst:" in bundle
-    assert "default: /Shared" in bundle
-    assert "space_id: ${resources.genie_spaces.fleet_telemetry_analyst.id}" in bundle
-    assert bundle.count("service_principal_name: ${var.app_service_principal_client_id}") == 8
+    assert "serverless: false" in production_reference
+    assert "continuous: true" not in combined_resources
+    assert "governed_telemetry_history_continuous:" in production_reference
+    assert (
+        "pipeline_id: ${resources.pipelines.governed_telemetry_history.id}"
+        in production_reference
+    )
+    assert combined_resources.count("pause_status: UNPAUSED") == 1
+    assert production_reference.count("pause_status: PAUSED") == 2
+    assert "level: CAN_RUN" in production_reference
+    assert "node_type_id: ${var.telemetry_pipeline_node_type}" in production_reference
+    assert "fleet_telemetry_analyst:" in production_reference
+    assert "default: /Shared" in production_reference
+    assert combined_resources.count(
+        "service_principal_name: ${resources.apps.command_center.service_principal_client_id}"
+    ) == 9
     assert "asset_reliability_workloads:" in bundle
     assert '"minValue": 0' in bundle
     assert '"maxValue": 1' in bundle
@@ -155,19 +200,18 @@ def test_bundle_uses_classic_pipeline_native_genie_and_obo_scope() -> None:
     # Lakeflow Declarative Pipelines reject policies that define data_security_mode. The four
     # standalone job clusters still set SINGLE_USER explicitly in their resource definitions.
     assert '"data_security_mode": {' not in bundle
-    assert bundle.count("data_security_mode: SINGLE_USER") == 4
+    assert combined_resources.count("data_security_mode: SINGLE_USER") == 4
     assert "runtime_engine: STANDARD" in bundle
     assert "trigger_interval: 10 seconds" in bundle
-    assert bundle.count(
+    assert combined_resources.count(
         "policy_id: ${resources.cluster_policies.asset_reliability_workloads.id}"
     ) == 5
-    assert "- genie" in bundle
+    assert "- genie" not in bundle
     assert "dashboards.genie" not in bundle
-    assert "DATABRICKS_GENIE_SPACE_ID" in app
-    assert "GENIE_SOURCE_LABEL" in app
-    assert "valueFrom: fleet-telemetry-genie" in app
+    assert "DATABRICKS_GENIE_SPACE_ID" not in app
+    assert "GENIE_SOURCE_LABEL" not in app
     assert "name: GLOBAL_AGENT_CONCURRENCY" in app
-    assert 'value: "20"' in app
+    assert 'value: "{{global_agent_concurrency}}"' in app
     assert "dan.keeling@" not in app
 
 
@@ -175,7 +219,7 @@ def test_rate_rtm_is_the_only_active_synthetic_source() -> None:
     bundle = (ROOT / "databricks.yml").read_text()
     source = RATE_RTM.read_text()
     active_job = bundle.split("    telemetry_rtm:", maxsplit=1)[1].split(
-        "    governed_telemetry_history_continuous:", maxsplit=1
+        "    evaluate_agent_traces:", maxsplit=1
     )[0]
 
     assert RATE_RTM.is_file()
@@ -247,7 +291,10 @@ def test_app_admission_uses_broad_group_without_product_roles() -> None:
     )[0]
 
     assert "app_access_group:" in bundle
-    assert "default: users" in bundle
+    app_access_variable = bundle.split("  app_access_group:", maxsplit=1)[1].split(
+        "  lakebase_project_id:", maxsplit=1
+    )[0]
+    assert "default:" not in app_access_variable
     assert "level: CAN_USE" in app_resource
     assert "group_name: ${var.app_access_group}" in app_resource
     before_apps = bundle.split("  apps:", maxsplit=1)[0]
@@ -263,7 +310,10 @@ def test_lakebase_migration_runs_as_app_sp_and_verifies_runtime_contract() -> No
     migration_resource = bundle.split("    migrate_lakebase_schema:", maxsplit=1)[1].split(
         "    telemetry_producer:", maxsplit=1
     )[0]
-    assert "service_principal_name: ${var.app_service_principal_client_id}" in migration_resource
+    assert (
+        "service_principal_name: "
+        "${resources.apps.command_center.service_principal_client_id}"
+    ) in migration_resource
     assert "notebook_path: ./src/migrations/apply_lakebase_schema.py" in migration_resource
     assert "lakebase_schema: ${var.lakebase_schema}" in migration_resource
     assert "sandbox_capacity: ${var.sandbox_capacity}" in migration_resource
@@ -289,7 +339,7 @@ def test_access_grant_exposes_only_the_curated_view() -> None:
     assert "GRANT USE CATALOG" in grants
     assert "GRANT USE SCHEMA" in grants
     assert "GRANT SELECT" in grants
-    assert "pump_telemetry_history" in grants
+    assert "telemetry_view_fqn" in grants
     assert "telemetry_bronze" not in grants
     assert "telemetry_silver" not in grants
     assert "telemetry_quarantine" not in grants
@@ -309,18 +359,11 @@ def test_runtime_principal_grant_is_minimal_and_idempotent() -> None:
     assert "ALL PRIVILEGES" not in grants
 
 
-def test_deployment_helper_migrates_stops_legacy_and_starts_rate(monkeypatch) -> None:
+def test_deployment_helper_migrates_and_starts_rate_without_optional_reference_jobs(
+    monkeypatch,
+) -> None:
     events: list[tuple[object, ...]] = []
-    args = Namespace(
-        profile="explicit-profile",
-        target="dev",
-        access_group="existing-group",
-        app_service_principal_client_id="existing-app-sp",
-        catalog="catalog",
-        schema="schema",
-        timeout_seconds=60,
-        poll_seconds=0,
-    )
+    args = deployment_args()
 
     monkeypatch.setattr(
         deploy_data_plane,
@@ -378,8 +421,6 @@ def test_deployment_helper_migrates_stops_legacy_and_starts_rate(monkeypatch) ->
         "run",
         "run",
         "grant_source_read",
-        "stop",
-        "stop",
         "pause_status",
         "stop",
         "pause_status",
@@ -392,7 +433,7 @@ def test_deployment_helper_migrates_stops_legacy_and_starts_rate(monkeypatch) ->
         "jobs.migrate_lakebase_schema",
     )
     assert "migrate_lakebase_schema" in events[4]
-    assert events[5] == (
+    assert events[5][:7] == (
         "run",
         "databricks",
         "bundle",
@@ -400,23 +441,16 @@ def test_deployment_helper_migrates_stops_legacy_and_starts_rate(monkeypatch) ->
         "--target",
         "dev",
         "--profile",
-        "explicit-profile",
-        "--var",
-        "app_access_group=existing-group",
-        "--var",
-        "app_service_principal_client_id=existing-app-sp",
-        "--var",
-        "catalog=catalog",
-        "--var",
-        "schema=schema",
-        "--auto-approve",
     )
+    assert "app_access_group=existing-group" in events[5]
+    assert "catalog=catalog" in events[5]
+    assert "lakebase_branch_name=main" in events[5]
+    assert "lakebase_database_name=customer-database" in events[5]
+    assert "lakebase_database_resource_name=customer-database-resource" in events[5]
+    assert "lakebase_endpoint_name=primary" in events[5]
+    assert "--auto-approve" in events[5]
     assert "setup_agent_observability_access" in events[6]
-    assert events[8:10] == [
-        ("stop", "telemetry_producer"),
-        ("stop", "governed_telemetry_history_continuous"),
-    ]
-    assert events[10:] == [
+    assert events[8:] == [
         ("pause_status", "telemetry_rtm", "PAUSED"),
         ("stop", "telemetry_rtm"),
         ("pause_status", "telemetry_rtm", "UNPAUSED"),
@@ -425,16 +459,7 @@ def test_deployment_helper_migrates_stops_legacy_and_starts_rate(monkeypatch) ->
 
 
 def test_migration_failure_prevents_every_continuous_restart(monkeypatch) -> None:
-    args = Namespace(
-        profile="explicit-profile",
-        target="dev",
-        access_group="existing-group",
-        app_service_principal_client_id="existing-app-sp",
-        catalog="catalog",
-        schema="schema",
-        timeout_seconds=60,
-        poll_seconds=0,
-    )
+    args = deployment_args()
     replacements: list[str] = []
 
     monkeypatch.setattr(deploy_data_plane, "selective_deploy", lambda *_args: None)

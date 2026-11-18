@@ -172,6 +172,8 @@ and product-adjacent execution records provide additional text-readable entry po
 - [Business presentation (Google Slides)](https://docs.google.com/presentation/d/1ZjGVpcxIoZDMIautKpRJVBGNnRTJNg9WKH3mFv0_1kI/edit)
 - [Business demo flow](DEMO.md)
 - [Technical architecture](docs/ARCHITECTURE.md)
+- [Customer installation and lifecycle](docs/CUSTOMER_DEPLOYMENT.md)
+- [Customer configuration worksheet](docs/examples/customer-values.example.yml)
 - [Manual deployment and live acceptance](docs/DEPLOYMENT.md)
 - [One-time text evidence package](docs/EVIDENCE.md)
 - [Technical debt and accepted tradeoffs](docs/TECHNICAL_DEBT.md)
@@ -191,8 +193,7 @@ npm --prefix frontend ci
 
 Open `http://127.0.0.1:5173`. `APP_ADAPTER=local` provides a deterministic command-centre
 fixture without Spark, Lakebase, model serving, or Unity Gateway. Genie is intentionally a
-deployed OBO integration and is unavailable without a configured Genie space and forwarded
-Databricks user token.
+production-reference integration and is not part of the default personal-sandbox App.
 
 ## Validation
 
@@ -201,16 +202,10 @@ uv run ruff check backend tests src scripts
 uv run pytest
 npm --prefix frontend run typecheck
 npm --prefix frontend run build
-uv run python scripts/deploy.py \
-  --profile fe_vm_rtm \
-  --target dev \
-  --expected-host https://fevm-classic-stable-realtime-demos.cloud.databricks.com \
-  --access-group users \
-  --catalog classic_stable_realtime_demos_catalog \
-  --schema asset_reliability_command_center \
-  --app-name asset-reliability-center
+uv run python scripts/deploy.py --help
 ```
 
-The deployment preflight also stages the runtime-only App source and validates the bundle without
-changing the workspace. Deployment remains manual. Use only the checked entry point documented in
-[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md); a Git push or merge never changes the workspace.
+The checked `preflight` operation takes explicit customer values, stages the runtime-only App
+source and strictly validates the bundle without changing the workspace. Use the complete command
+in [Customer installation and lifecycle](docs/CUSTOMER_DEPLOYMENT.md). Deployment remains manual;
+a Git push or merge never changes the workspace.

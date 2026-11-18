@@ -7,11 +7,11 @@ reconciles bundle and governance resources and restarts continuous workloads.  `
 instead updates only the staged Databricks App snapshot for changes contained within the App
 runtime boundary.
 
-For a complete deployment, the data-plane phase migrates Lakebase, pauses and stops obsolete
-Kafka workloads, and starts the shared Spark Rate RTM job before the App snapshot is created.
-Remote mutations are disabled unless ``--execute`` is supplied. No credential or generated
-secret is read, printed, or written by this script; Databricks CLI authentication is selected
-only through the required explicit profile.
+For a complete deployment, the data-plane phase migrates Lakebase and starts the shared Spark
+Rate RTM job before the App snapshot is created. ``preflight`` is read-only; only explicit
+``install`` and ``update`` operations mutate the workspace. No credential or generated secret is
+read, printed, or written by this script; Databricks CLI authentication is selected only through
+the required explicit profile.
 """
 
 from __future__ import annotations
@@ -23,29 +23,31 @@ import shlex
 import shutil
 import subprocess
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
+
+import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 BUILD_INFO = ROOT / ".build-info.json"
 MINIMUM_CLI_VERSION = (1, 17, 0)
 
-# The App snapshot is intentionally smaller than the bundle.  In particular, the bundle root
-# contains a managed Genie workspace node that the Databricks Apps snapshot importer cannot
-# deserialize.  Keep this allowlist aligned with actual runtime imports and file reads.
+# The App snapshot is intentionally smaller than the bundle. Keep this allowlist aligned with
+# actual runtime imports and file reads; jobs, notebooks and optional reference assets stay out.
 APP_RUNTIME_DIRECTORIES = (
     Path("backend"),
     Path("frontend/dist"),
 )
 APP_RUNTIME_FILES = (
     Path("sql/lakebase_schema.sql"),
-    Path("app.yaml"),
     Path("pyproject.toml"),
     Path("uv.lock"),
     Path("requirements.txt"),
     Path(".build-info.json"),
 )
+APP_CONFIG_TEMPLATE = Path("app.yaml.template")
 APP_IGNORED_NAMES = {".DS_Store", ".databrickscfg", ".env", "__pycache__"}
 APP_IGNORED_SUFFIXES = {".pyc", ".pyo"}
 APP_FORBIDDEN_TOP_LEVEL = {
@@ -70,26 +72,95 @@ class DeploymentInputs:
     access_group: str
     catalog: str
     schema: str
+    volume: str
+    warehouse_id: str
     app_name: str
-    app_service_principal_client_id: str
+    app_service_principal_client_id: str | None
+    lakebase_project_id: str
+    lakebase_branch: str
+    lakebase_database: str
+    lakebase_database_resource_name: str
+    lakebase_endpoint_name: str
+    lakebase_schema: str
+    foundation_model: str
+    model_service_name: str
+    mlflow_experiment_name: str
+    mlflow_trace_catalog: str
+    mlflow_trace_schema: str
+    mlflow_trace_table_prefix: str
+    sandbox_capacity: int
+    telemetry_samples_per_second: int
+    telemetry_source_partitions: int
+    skill_id: str
+    mcp_service_id: str
+    mcp_connection_id: str
+    policy_function_name: str
+    global_agent_concurrency: int
     table_timeout_seconds: int
 
     @property
+    def schema_fqn(self) -> str:
+        return f"{self.catalog}.{self.schema}"
+
+    @property
+    def skill_fqn(self) -> str:
+        return f"{self.schema_fqn}.{self.skill_id}"
+
+    @property
+    def mcp_service_fqn(self) -> str:
+        return f"{self.schema_fqn}.{self.mcp_service_id}"
+
+    @property
+    def policy_fqn(self) -> str:
+        return f"{self.schema_fqn}.{self.policy_function_name}"
+
+    def with_app_principal(self, client_id: str) -> DeploymentInputs:
+        """Return immutable inputs bound to the App identity discovered in the workspace."""
+
+        return replace(self, app_service_principal_client_id=client_id)
+
+    @property
     def bundle_flags(self) -> list[str]:
-        return [
-            "--target",
-            self.target,
-            "--profile",
-            self.profile,
-            "--var",
-            f"app_access_group={self.access_group}",
-            "--var",
-            f"app_service_principal_client_id={self.app_service_principal_client_id}",
-            "--var",
-            f"catalog={self.catalog}",
-            "--var",
-            f"schema={self.schema}",
-        ]
+        variables: dict[str, str | int] = {
+            "app_access_group": self.access_group,
+            "catalog": self.catalog,
+            "schema": self.schema,
+            "volume": self.volume,
+            "warehouse_id": self.warehouse_id,
+            "lakebase_project_id": self.lakebase_project_id,
+            "lakebase_branch_name": self.lakebase_branch,
+            "lakebase_database_name": self.lakebase_database,
+            "lakebase_database_resource_name": self.lakebase_database_resource_name,
+            "lakebase_endpoint_name": self.lakebase_endpoint_name,
+            "lakebase_schema": self.lakebase_schema,
+            "foundation_model": self.foundation_model,
+            "model_service_name": self.model_service_name,
+            "mlflow_experiment_name": self.mlflow_experiment_name,
+            "mlflow_trace_catalog": self.mlflow_trace_catalog,
+            "mlflow_trace_schema": self.mlflow_trace_schema,
+            "mlflow_trace_table_prefix": self.mlflow_trace_table_prefix,
+            "mcp_service_name": self.mcp_service_id,
+            "governed_skill_name": self.skill_id,
+            "policy_function_name": self.policy_function_name,
+            "global_agent_concurrency": self.global_agent_concurrency,
+            "sandbox_capacity": self.sandbox_capacity,
+            "telemetry_samples_per_second": self.telemetry_samples_per_second,
+            "telemetry_source_partitions": self.telemetry_source_partitions,
+            "app_name": self.app_name,
+            "workspace_host": self.expected_host.rstrip("/"),
+        }
+        flags = ["--target", self.target, "--profile", self.profile]
+        for name, value in variables.items():
+            flags.extend(["--var", f"{name}={value}"])
+        return flags
+
+
+class DeploymentOperation(StrEnum):
+    """Customer-facing lifecycle operations with explicit mutation semantics."""
+
+    PREFLIGHT = "preflight"
+    INSTALL = "install"
+    UPDATE = "update"
 
 
 @dataclass(frozen=True)
@@ -131,6 +202,13 @@ class Runner:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "operation",
+        nargs="?",
+        choices=[item.value for item in DeploymentOperation],
+        default=DeploymentOperation.PREFLIGHT.value,
+        help="preflight is read-only; install/update apply the declared workspace changes.",
+    )
     parser.add_argument("--profile", required=True, help="Databricks CLI profile.")
     parser.add_argument("--target", required=True, help="Bundle target.")
     parser.add_argument(
@@ -145,17 +223,36 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--catalog", required=True, help="Project Unity Catalog catalog.")
     parser.add_argument("--schema", required=True, help="Project Unity Catalog schema.")
+    parser.add_argument("--volume", required=True, help="Managed checkpoint volume name.")
+    parser.add_argument("--warehouse-id", required=True, help="SQL warehouse resource ID.")
     parser.add_argument("--app-name", required=True, help="Databricks App name.")
     parser.add_argument(
         "--app-service-principal-client-id",
-        required=True,
-        help="Existing Databricks App service-principal application ID.",
+        help=(
+            "Optional expected App service-principal application ID. The deployed App is the "
+            "source of truth and its ID is discovered automatically."
+        ),
     )
-    parser.add_argument(
-        "--execute",
-        action="store_true",
-        help="Apply remote mutations after all local and remote preflight checks pass.",
-    )
+    parser.add_argument("--lakebase-project-id", required=True)
+    parser.add_argument("--lakebase-branch", required=True)
+    parser.add_argument("--lakebase-database", required=True)
+    parser.add_argument("--lakebase-database-resource-name", required=True)
+    parser.add_argument("--lakebase-endpoint-name", required=True)
+    parser.add_argument("--lakebase-schema", required=True)
+    parser.add_argument("--foundation-model", required=True)
+    parser.add_argument("--model-service-name", required=True)
+    parser.add_argument("--mlflow-experiment-name", required=True)
+    parser.add_argument("--mlflow-trace-catalog", required=True)
+    parser.add_argument("--mlflow-trace-schema", required=True)
+    parser.add_argument("--mlflow-trace-table-prefix", required=True)
+    parser.add_argument("--sandbox-capacity", required=True, type=int)
+    parser.add_argument("--telemetry-samples-per-second", required=True, type=int)
+    parser.add_argument("--telemetry-source-partitions", required=True, type=int)
+    parser.add_argument("--skill-id", required=True)
+    parser.add_argument("--mcp-service-id", required=True)
+    parser.add_argument("--mcp-connection-id", required=True)
+    parser.add_argument("--policy-function-name", required=True)
+    parser.add_argument("--global-agent-concurrency", required=True, type=int)
     parser.add_argument(
         "--app-only",
         action="store_true",
@@ -168,7 +265,7 @@ def parse_args() -> argparse.Namespace:
         "--table-timeout-seconds",
         type=int,
         default=600,
-        help="Maximum wait for obsolete jobs to stop and Rate RTM to reach RUNNING.",
+        help="Maximum wait for the Rate RTM workload to reach RUNNING.",
     )
     return parser.parse_args()
 
@@ -219,6 +316,7 @@ def _ignored_app_files(_directory: str, names: list[str]) -> set[str]:
 def stage_app_source(
     root: Path = ROOT,
     destination: Path | None = None,
+    inputs: DeploymentInputs | None = None,
 ) -> Path:
     """Create a deterministic, runtime-only source tree for the Databricks App snapshot.
 
@@ -235,6 +333,7 @@ def stage_app_source(
 
     required = [*(root / path for path in APP_RUNTIME_DIRECTORIES)]
     required.extend(root / path for path in APP_RUNTIME_FILES)
+    required.append(root / APP_CONFIG_TEMPLATE)
     missing = [str(path.relative_to(root)) for path in required if not path.exists()]
     if missing:
         raise RuntimeError("App runtime inputs are missing: " + ", ".join(missing))
@@ -259,6 +358,8 @@ def stage_app_source(
         target = destination / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(root / relative, target)
+    if inputs:
+        generate_app_config(root / APP_CONFIG_TEMPLATE, destination / "app.yaml", inputs)
 
     staged_top_level = {path.name for path in destination.iterdir()}
     forbidden = sorted(staged_top_level & APP_FORBIDDEN_TOP_LEVEL)
@@ -277,6 +378,55 @@ def stage_app_source(
     return destination
 
 
+def generated_app_environment(inputs: DeploymentInputs) -> dict[str, str]:
+    """Return portable App values derived only from explicit deployment inputs."""
+
+    host = inputs.expected_host.rstrip("/")
+    return {
+        "MLFLOW_TRACING_DESTINATION": (
+            f"{inputs.mlflow_trace_catalog}.{inputs.mlflow_trace_schema}"
+        ),
+        "GOVERNED_MCP_ENDPOINT": (
+            f"{host}/ai-gateway/mcp-services/{inputs.mcp_service_fqn}"
+        ),
+        "GOVERNED_SKILL_ENDPOINT": (
+            f"{host}/ai-gateway/skills/?schema={inputs.schema_fqn}"
+        ),
+        "GOVERNED_SKILL_TOOL": f"skill_{inputs.skill_fqn}",
+        "GOVERNED_SKILL_DOCUMENT_URL": (
+            f"{host}/api/2.0/fs/files/Skills/{inputs.catalog}/{inputs.schema}/"
+            f"{inputs.skill_id}/SKILL.md"
+        ),
+        "LAKEBASE_SCHEMA": inputs.lakebase_schema,
+        "GLOBAL_AGENT_CONCURRENCY": str(inputs.global_agent_concurrency),
+    }
+
+
+def generate_app_config(
+    template: Path, destination: Path, inputs: DeploymentInputs
+) -> None:
+    """Render environment-specific ``app.yaml`` only inside the ignored App artifact."""
+
+    if template.resolve() == destination.resolve():
+        raise RuntimeError("Generated app.yaml must not overwrite the tracked template")
+    payload = yaml.safe_load(template.read_text())
+    if not isinstance(payload, dict) or not isinstance(payload.get("env"), list):
+        raise RuntimeError(f"Invalid Databricks App template: {template}")
+    declared = {
+        item.get("name"): item
+        for item in payload["env"]
+        if isinstance(item, dict) and isinstance(item.get("name"), str)
+    }
+    for name, value in generated_app_environment(inputs).items():
+        entry = declared.get(name)
+        if entry is None:
+            entry = {"name": name}
+            payload["env"].append(entry)
+        entry.pop("valueFrom", None)
+        entry["value"] = value
+    destination.write_text(yaml.safe_dump(payload, sort_keys=False))
+
+
 def assert_cli_version(runner: Runner) -> None:
     """Enforce the repository's minimum supported Databricks CLI version."""
 
@@ -292,9 +442,9 @@ def assert_cli_version(runner: Runner) -> None:
 
 
 def verify_profile(
-    runner: Runner, inputs: DeploymentInputs
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Confirm workspace, human group membership, and the existing App workload identity."""
+    runner: Runner, inputs: DeploymentInputs, *, require_app: bool = True
+) -> tuple[dict[str, Any], dict[str, Any] | None, DeploymentInputs]:
+    """Confirm workspace/group access and optionally resolve an existing App identity."""
 
     auth = runner.json(
         ["databricks", "auth", "describe", "--profile", inputs.profile, "-o", "json"]
@@ -319,7 +469,34 @@ def verify_profile(
         raise RuntimeError(
             f"Deploying user is not a member of existing group {inputs.access_group!r}"
         )
-    app = runner.json(
+    try:
+        app = fetch_app(runner, inputs)
+    except subprocess.CalledProcessError:
+        if require_app:
+            raise RuntimeError(
+                f"App {inputs.app_name!r} does not exist; use the install operation first"
+            ) from None
+        return user, None, inputs
+    actual_principal = app.get("service_principal_client_id")
+    if not actual_principal:
+        raise RuntimeError(
+            f"App {inputs.app_name!r} does not expose a service-principal client ID"
+        )
+    if (
+        inputs.app_service_principal_client_id
+        and actual_principal != inputs.app_service_principal_client_id
+    ):
+        raise RuntimeError(
+            f"App {inputs.app_name!r} uses service principal {actual_principal!r}, not the "
+            "explicit deployment input"
+        )
+    return user, app, inputs.with_app_principal(str(actual_principal))
+
+
+def fetch_app(runner: Runner, inputs: DeploymentInputs) -> dict[str, Any]:
+    """Fetch the App through the explicitly selected profile."""
+
+    return runner.json(
         [
             "databricks",
             "apps",
@@ -331,13 +508,19 @@ def verify_profile(
             "json",
         ]
     )
-    actual_principal = app.get("service_principal_client_id")
-    if actual_principal != inputs.app_service_principal_client_id:
+
+
+def bind_app_identity(inputs: DeploymentInputs, app: dict[str, Any]) -> DeploymentInputs:
+    """Resolve and optionally verify the App-created service principal."""
+
+    actual = str(app.get("service_principal_client_id") or "")
+    if not actual:
+        raise RuntimeError(f"App {inputs.app_name!r} has no service-principal client ID")
+    if inputs.app_service_principal_client_id and inputs.app_service_principal_client_id != actual:
         raise RuntimeError(
-            f"App {inputs.app_name!r} uses service principal {actual_principal!r}, not the "
-            "explicit deployment input"
+            f"App {inputs.app_name!r} uses service principal {actual!r}, not the explicit input"
         )
-    return user, app
+    return inputs.with_app_principal(actual)
 
 
 def resolve_app_source_path(app: dict[str, Any]) -> str:
@@ -417,9 +600,9 @@ def run_quality_gate(runner: Runner, inputs: DeploymentInputs) -> None:
         runner.run(command)
     assert_requirements_current(runner)
     assert_frontend_fresh()
-    staged = stage_app_source()
+    staged = stage_app_source(inputs=inputs)
     print(f"Staged runtime-only App source at {staged.relative_to(ROOT)}", flush=True)
-    runner.run(["databricks", "bundle", "validate", *inputs.bundle_flags])
+    runner.run(["databricks", "bundle", "validate", "--strict", *inputs.bundle_flags])
     runner.run(["git", "diff", "--exit-code"])
 
 
@@ -432,6 +615,10 @@ def deployment_steps(
     """Return remote mutations for the selected deployment scope."""
 
     flags = inputs.bundle_flags
+    if not app_only and not inputs.app_service_principal_client_id:
+        raise RuntimeError(
+            "Complete deployment requires the App-created service principal to be resolved"
+        )
     app_step = Step(
         "Deploy the App snapshot after Rate telemetry is ready",
         ["databricks", "apps", "deploy", *flags, "--auto-approve"],
@@ -439,7 +626,7 @@ def deployment_steps(
     if app_only:
         if not app_source_path:
             raise ValueError("App-only deployment requires the resolved App source path")
-        return [
+        steps = [
             Step(
                 "Sync only the staged App runtime source",
                 [
@@ -472,6 +659,8 @@ def deployment_steps(
                 ],
             ),
         ]
+        assert_app_only_steps(steps, inputs.app_name, app_source_path)
+        return steps
 
     return [
         Step(
@@ -493,12 +682,57 @@ def deployment_steps(
                 inputs.catalog,
                 "--schema",
                 inputs.schema,
+                "--volume",
+                inputs.volume,
+                "--warehouse-id",
+                inputs.warehouse_id,
+                "--workspace-host",
+                inputs.expected_host.rstrip("/"),
+                "--app-name",
+                inputs.app_name,
+                "--lakebase-project-id",
+                inputs.lakebase_project_id,
+                "--lakebase-branch",
+                inputs.lakebase_branch,
+                "--lakebase-database",
+                inputs.lakebase_database,
+                "--lakebase-database-resource-name",
+                inputs.lakebase_database_resource_name,
+                "--lakebase-endpoint-name",
+                inputs.lakebase_endpoint_name,
+                "--lakebase-schema",
+                inputs.lakebase_schema,
+                "--foundation-model",
+                inputs.foundation_model,
+                "--model-service-name",
+                inputs.model_service_name,
+                "--mlflow-experiment-name",
+                inputs.mlflow_experiment_name,
+                "--mlflow-trace-catalog",
+                inputs.mlflow_trace_catalog,
+                "--mlflow-trace-schema",
+                inputs.mlflow_trace_schema,
+                "--mlflow-trace-table-prefix",
+                inputs.mlflow_trace_table_prefix,
+                "--mcp-service-name",
+                inputs.mcp_service_id,
+                "--governed-skill-name",
+                inputs.skill_id,
+                "--policy-function-name",
+                inputs.policy_function_name,
+                "--global-agent-concurrency",
+                str(inputs.global_agent_concurrency),
+                "--sandbox-capacity",
+                str(inputs.sandbox_capacity),
+                "--telemetry-samples-per-second",
+                str(inputs.telemetry_samples_per_second),
+                "--telemetry-source-partitions",
+                str(inputs.telemetry_source_partitions),
                 "--timeout-seconds",
                 str(inputs.table_timeout_seconds),
                 "--deploy",
             ],
         ),
-        app_step,
         Step(
             "Create or update the Unity Gateway policy function",
             ["databricks", "bundle", "run", *flags, "setup_unity_governance"],
@@ -506,9 +740,57 @@ def deployment_steps(
         Step(
             "Reconcile the Skill, MCP source, service, selectors, and ASK policy",
             ["uv", "run", "python", "-m", "scripts.deploy_governance"],
-            environment={"DATABRICKS_CONFIG_PROFILE": inputs.profile},
+            environment={
+                "DATABRICKS_CONFIG_PROFILE": inputs.profile,
+                "ASSET_RELIABILITY_CATALOG": inputs.catalog,
+                "ASSET_RELIABILITY_SCHEMA": inputs.schema,
+                "ASSET_RELIABILITY_APP_NAME": inputs.app_name,
+                "ASSET_RELIABILITY_SKILL_ID": inputs.skill_id,
+                "ASSET_RELIABILITY_MCP_SERVICE_ID": inputs.mcp_service_id,
+                "ASSET_RELIABILITY_MCP_CONNECTION_ID": inputs.mcp_connection_id,
+                "ASSET_RELIABILITY_POLICY_FUNCTION_NAME": inputs.policy_function_name,
+                "ASSET_RELIABILITY_UC_AUDIENCE": "account users",
+            },
         ),
+        app_step,
     ]
+
+
+def install_bootstrap_step(inputs: DeploymentInputs) -> Step:
+    """Create bundle foundations, including the App and its generated workload identity."""
+
+    return Step(
+        "Create foundational resources and the Databricks App",
+        [
+            "databricks",
+            "bundle",
+            "deploy",
+            *inputs.bundle_flags,
+            "--auto-approve",
+            "--select",
+            "apps.command_center",
+        ],
+    )
+
+
+def assert_app_only_steps(
+    steps: list[Step], app_name: str, app_source_path: str
+) -> None:
+    """Fail closed if an App-only plan contains any non-App mutation."""
+
+    expected = (
+        ("databricks", "sync"),
+        ("databricks", "apps", "deploy", app_name),
+    )
+    prefixes = [tuple(step.command[: len(prefix)]) for step, prefix in zip(steps, expected)]
+    if len(steps) != 2 or prefixes != list(expected):
+        raise RuntimeError("App-only deployment plan contains a non-App mutation")
+    for step in steps:
+        joined = " ".join(step.command)
+        if "bundle" in step.command or "scripts.deploy_" in joined:
+            raise RuntimeError("App-only deployment must not invoke bundle or resource tooling")
+    if steps[0].command[3] != app_source_path:
+        raise RuntimeError("App-only sync target differs from the App's existing source path")
 
 
 def ensure_app_user_scopes(
@@ -526,7 +808,7 @@ def ensure_app_user_scopes(
         "-o",
         "json",
     ]
-    required = {"ai-gateway", "genie"}
+    required = {"ai-gateway"}
     app = runner.json(get_command)
     effective = set(app.get("effective_user_api_scopes", []))
     if required <= effective:
@@ -547,7 +829,7 @@ def ensure_app_user_scopes(
             return
         time.sleep(5)
     raise RuntimeError(
-        "App did not become RUNNING with ai-gateway and genie OBO scopes"
+        "App did not become RUNNING with the ai-gateway OBO scope"
     )
 
 
@@ -581,8 +863,30 @@ def main() -> None:
         access_group=args.access_group,
         catalog=args.catalog,
         schema=args.schema,
+        volume=args.volume,
+        warehouse_id=args.warehouse_id,
         app_name=args.app_name,
         app_service_principal_client_id=args.app_service_principal_client_id,
+        lakebase_project_id=args.lakebase_project_id,
+        lakebase_branch=args.lakebase_branch,
+        lakebase_database=args.lakebase_database,
+        lakebase_database_resource_name=args.lakebase_database_resource_name,
+        lakebase_endpoint_name=args.lakebase_endpoint_name,
+        lakebase_schema=args.lakebase_schema,
+        foundation_model=args.foundation_model,
+        model_service_name=args.model_service_name,
+        mlflow_experiment_name=args.mlflow_experiment_name,
+        mlflow_trace_catalog=args.mlflow_trace_catalog,
+        mlflow_trace_schema=args.mlflow_trace_schema,
+        mlflow_trace_table_prefix=args.mlflow_trace_table_prefix,
+        sandbox_capacity=args.sandbox_capacity,
+        telemetry_samples_per_second=args.telemetry_samples_per_second,
+        telemetry_source_partitions=args.telemetry_source_partitions,
+        skill_id=args.skill_id,
+        mcp_service_id=args.mcp_service_id,
+        mcp_connection_id=args.mcp_connection_id,
+        policy_function_name=args.policy_function_name,
+        global_agent_concurrency=args.global_agent_concurrency,
         table_timeout_seconds=args.table_timeout_seconds,
     )
     runner = Runner()
@@ -591,8 +895,15 @@ def main() -> None:
     commit = current_commit(runner)
     write_build_info(commit)
     assert_cli_version(runner)
-    user, app = verify_profile(runner, inputs)
-    app_source_path = resolve_app_source_path(app) if args.app_only else None
+    operation = DeploymentOperation(args.operation)
+    if args.app_only and operation is DeploymentOperation.INSTALL:
+        raise RuntimeError("--app-only is an update path and cannot be used for installation")
+    user, app, inputs = verify_profile(
+        runner,
+        inputs,
+        require_app=operation is DeploymentOperation.UPDATE or args.app_only,
+    )
+    app_source_path = resolve_app_source_path(app) if args.app_only and app else None
     print(
         f"Preflight target: {inputs.expected_host} as "
         f"{user.get('userName', user.get('id', 'unknown user'))}; commit {commit}; "
@@ -600,12 +911,18 @@ def main() -> None:
     )
     run_quality_gate(runner, inputs)
 
-    if not args.execute:
+    if operation is DeploymentOperation.PREFLIGHT:
         print(
-            "Preflight passed. Re-run with --execute to apply the selected "
-            "deployment scope."
+            "Preflight passed. Re-run with the install or update operation to apply the "
+            "selected deployment scope."
         )
         return
+
+    if operation is DeploymentOperation.INSTALL:
+        bootstrap = install_bootstrap_step(inputs)
+        print(f"\n==> {bootstrap.label}")
+        runner.run(bootstrap.command)
+        inputs = bind_app_identity(inputs, fetch_app(runner, inputs))
 
     for step in deployment_steps(
         inputs,

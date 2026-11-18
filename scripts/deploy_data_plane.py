@@ -1,10 +1,9 @@
 """Validate and dependency-order deployment of the personal-sandbox data plane.
 
-The helper first grants the existing App service principal the minimum workload privileges and
-runs the idempotent Lakebase migration as that schema-owning identity. It then deploys the full
-bundle, stops the obsolete Kafka producer and governed-history pipeline runner, and starts only
-the shared Spark Rate Real-Time Mode job. This ordering keeps the old writer compatible until the
-additive migration is complete and prevents paused reference workloads from continuing to run.
+The helper first grants the App service principal the minimum workload privileges and runs the
+idempotent Lakebase migration as that schema-owning identity. It then deploys the primary bundle
+and starts the shared Spark Rate Real-Time Mode job. Kafka, Lakeflow and Genie remain outside the
+primary bundle as optional production-reference assets.
 """
 
 from __future__ import annotations
@@ -17,15 +16,10 @@ from pathlib import Path
 from typing import Any
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_ACCESS_GROUP = "users"
 DEFAULT_TIMEOUT_SECONDS = 1_200
 COMPUTE_POLICY_KEY = "asset_reliability_workloads"
 LAKEBASE_MIGRATION_KEY = "migrate_lakebase_schema"
 RATE_JOB_KEY = "telemetry_rtm"
-OBSOLETE_CONTINUOUS_JOB_KEYS = (
-    "telemetry_producer",
-    "governed_telemetry_history_continuous",
-)
 
 
 def run(
@@ -55,7 +49,35 @@ def run_json(command: list[str]) -> dict[str, Any]:
 def bundle_command(action: str, args: argparse.Namespace, *extra: str) -> list[str]:
     """Build a bundle command with an explicit profile, target, and access group."""
 
-    return [
+    variables = {
+        "app_access_group": args.access_group,
+        "catalog": args.catalog,
+        "schema": args.schema,
+        "volume": args.volume,
+        "warehouse_id": args.warehouse_id,
+        "workspace_host": args.workspace_host,
+        "app_name": args.app_name,
+        "lakebase_project_id": args.lakebase_project_id,
+        "lakebase_branch_name": args.lakebase_branch,
+        "lakebase_database_name": args.lakebase_database,
+        "lakebase_database_resource_name": args.lakebase_database_resource_name,
+        "lakebase_endpoint_name": args.lakebase_endpoint_name,
+        "lakebase_schema": args.lakebase_schema,
+        "foundation_model": args.foundation_model,
+        "model_service_name": args.model_service_name,
+        "mlflow_experiment_name": args.mlflow_experiment_name,
+        "mlflow_trace_catalog": args.mlflow_trace_catalog,
+        "mlflow_trace_schema": args.mlflow_trace_schema,
+        "mlflow_trace_table_prefix": args.mlflow_trace_table_prefix,
+        "mcp_service_name": args.mcp_service_name,
+        "governed_skill_name": args.governed_skill_name,
+        "policy_function_name": args.policy_function_name,
+        "global_agent_concurrency": args.global_agent_concurrency,
+        "sandbox_capacity": args.sandbox_capacity,
+        "telemetry_samples_per_second": args.telemetry_samples_per_second,
+        "telemetry_source_partitions": args.telemetry_source_partitions,
+    }
+    command = [
         "databricks",
         "bundle",
         action,
@@ -63,16 +85,10 @@ def bundle_command(action: str, args: argparse.Namespace, *extra: str) -> list[s
         args.target,
         "--profile",
         args.profile,
-        "--var",
-        f"app_access_group={args.access_group}",
-        "--var",
-        f"app_service_principal_client_id={args.app_service_principal_client_id}",
-        "--var",
-        f"catalog={args.catalog}",
-        "--var",
-        f"schema={args.schema}",
-        *extra,
     ]
+    for name, value in variables.items():
+        command.extend(["--var", f"{name}={value}"])
+    return [*command, *extra]
 
 
 def workspace_command(args: argparse.Namespace, *parts: str) -> list[str]:
@@ -315,8 +331,7 @@ def stop_continuous_job(args: argparse.Namespace, resource_key: str) -> None:
     )
 
     # Some workspace versions acknowledge cancel-all-runs without terminating an existing
-    # CONTINUOUS_RESTART parent. Cancel each observed parent explicitly before polling so a
-    # legacy producer can never overlap the replacement Rate source.
+    # CONTINUOUS_RESTART parent. Cancel each observed parent explicitly before polling.
     for run_payload in active_job_runs(args, resource_key):
         run_id = run_payload.get("run_id")
         if run_id:
@@ -336,7 +351,7 @@ def stop_continuous_job(args: argparse.Namespace, resource_key: str) -> None:
             return
         time.sleep(args.poll_seconds)
     raise TimeoutError(
-        f"Timed out after {args.timeout_seconds}s stopping obsolete job {resource_key}"
+        f"Timed out after {args.timeout_seconds}s stopping job {resource_key}"
     )
 
 
@@ -424,18 +439,14 @@ def deploy(args: argparse.Namespace) -> None:
     # is reachable if App-SP authentication, migration DDL, or contract verification fails.
     run(bundle_command("run", args, LAKEBASE_MIGRATION_KEY))
 
-    # The full resource deployment changes the legacy continuous resources to PAUSED before they
-    # are canceled. The governed-history assets remain available as a production reference, but
-    # are not part of the active synthetic demo or its readiness gate.
+    # Reconcile only the primary personal-sandbox bundle. Optional production-reference resources
+    # are defined in an un-included fragment and cannot enter this readiness path.
     run(bundle_command("deploy", args, "--auto-approve"))
     # Experiment creation provisions the UC trace tables during the full bundle deployment. Grant
     # access only after those tables exist; the App identity writes traces and admitted users read
     # them through MLflow. This setup job is idempotent and blocks App deployment on failure.
     run(bundle_command("run", args, "setup_agent_observability_access"))
     grant_bundle_source_read(args)
-    for resource_key in OBSOLETE_CONTINUOUS_JOB_KEYS:
-        stop_continuous_job(args, resource_key)
-
     # Pause the continuous trigger before cancellation so Databricks cannot replace an old parent
     # while it is being drained. Only after active_job_runs is empty do we resume the trigger and
     # request a fresh parent/task pair.
@@ -467,32 +478,55 @@ def deploy(args: argparse.Namespace) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--profile", required=True, help="Explicit Databricks CLI profile.")
-    parser.add_argument("--target", default="dev", help="Bundle target (default: dev).")
+    parser.add_argument("--target", required=True, help="Bundle target.")
     parser.add_argument(
         "--access-group",
-        default=DEFAULT_ACCESS_GROUP,
+        required=True,
         help="Existing App-admission group; this helper never creates groups or product roles.",
     )
     parser.add_argument(
         "--app-service-principal-client-id",
-        default="bd5178cb-8774-4d77-bc63-b4f491716d0b",
+        required=True,
         help="Existing Databricks App service-principal application ID.",
     )
     parser.add_argument(
         "--catalog",
-        default="classic_stable_realtime_demos_catalog",
+        required=True,
         help="Catalog containing the governed telemetry view.",
     )
     parser.add_argument(
         "--schema",
-        default="asset_reliability_command_center",
+        required=True,
         help="Schema containing the governed telemetry view.",
     )
+    parser.add_argument("--volume", required=True)
+    parser.add_argument("--warehouse-id", required=True)
+    parser.add_argument("--workspace-host", required=True)
+    parser.add_argument("--app-name", required=True)
+    parser.add_argument("--lakebase-project-id", required=True)
+    parser.add_argument("--lakebase-branch", required=True)
+    parser.add_argument("--lakebase-database", required=True)
+    parser.add_argument("--lakebase-database-resource-name", required=True)
+    parser.add_argument("--lakebase-endpoint-name", required=True)
+    parser.add_argument("--lakebase-schema", required=True)
+    parser.add_argument("--foundation-model", required=True)
+    parser.add_argument("--model-service-name", required=True)
+    parser.add_argument("--mlflow-experiment-name", required=True)
+    parser.add_argument("--mlflow-trace-catalog", required=True)
+    parser.add_argument("--mlflow-trace-schema", required=True)
+    parser.add_argument("--mlflow-trace-table-prefix", required=True)
+    parser.add_argument("--mcp-service-name", required=True)
+    parser.add_argument("--governed-skill-name", required=True)
+    parser.add_argument("--policy-function-name", required=True)
+    parser.add_argument("--global-agent-concurrency", required=True, type=int)
+    parser.add_argument("--sandbox-capacity", required=True, type=int)
+    parser.add_argument("--telemetry-samples-per-second", required=True, type=int)
+    parser.add_argument("--telemetry-source-partitions", required=True, type=int)
     parser.add_argument(
         "--timeout-seconds",
         type=int,
         default=DEFAULT_TIMEOUT_SECONDS,
-        help="Maximum wait for obsolete jobs to stop and Rate RTM to reach RUNNING.",
+        help="Maximum wait for the Rate RTM workload to reach RUNNING.",
     )
     parser.add_argument(
         "--poll-seconds",

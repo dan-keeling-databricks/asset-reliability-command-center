@@ -45,15 +45,15 @@ from pyspark.sql.streaming import StreamingQueryListener
 
 # COMMAND ----------
 
-dbutils.widgets.text("catalog", "classic_stable_realtime_demos_catalog")
-dbutils.widgets.text("schema", "asset_reliability_command_center")
+dbutils.widgets.text("catalog", "")
+dbutils.widgets.text("schema", "")
 dbutils.widgets.text("volume", "runtime")
 dbutils.widgets.text("sandbox_capacity", "32")
 dbutils.widgets.text("samples_per_second", "2")
 dbutils.widgets.text("source_partitions", "4")
 dbutils.widgets.text(
     "lakebase_endpoint",
-    "projects/asset-reliability-command-center/branches/production/endpoints/primary",
+    "",
 )
 dbutils.widgets.text("lakebase_database", "databricks_postgres")
 dbutils.widgets.text("lakebase_table", "asset_reliability.telemetry_events")
@@ -89,6 +89,8 @@ for identifier in (CATALOG, SCHEMA, VOLUME):
         raise ValueError(f"Invalid Unity Catalog identifier: {identifier}")
 if not re.fullmatch(r"[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*", LAKEBASE_TABLE):
     raise ValueError("lakebase_table must be schema.table using simple identifiers")
+if not LAKEBASE_ENDPOINT:
+    raise ValueError("lakebase_endpoint is required")
 if SANDBOX_CAPACITY <= 0:
     raise ValueError("sandbox_capacity must be positive")
 if SAMPLES_PER_SECOND <= 0:

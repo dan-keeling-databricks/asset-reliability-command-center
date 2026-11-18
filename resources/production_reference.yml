@@ -1,0 +1,141 @@
+# Optional production-reference resources.
+#
+# The primary bundle deliberately does not include this file. To deploy the Kafka/Lakeflow/Genie
+# reference path, render the Genie definition from its adjacent template and add this file to the
+# root bundle's `include` list. Both continuous jobs remain paused until explicitly activated.
+
+variables:
+  kafka_bootstrap:
+    description: Kafka bootstrap address for the optional production telemetry source.
+  kafka_topic:
+    description: Kafka topic containing production pump telemetry.
+    default: asset-reliability-pump-telemetry
+  telemetry_pipeline_node_type:
+    description: Classic-compute worker type for governed telemetry ingestion.
+    default: i3.xlarge
+  production_reference_access_group:
+    description: Existing workspace group granted access to optional history and Genie resources.
+  genie_parent_path:
+    description: Workspace folder in which the optional Genie space is managed.
+    default: /Shared
+
+resources:
+  jobs:
+    setup_telemetry_access:
+      name: Asset Reliability — grant curated telemetry access
+      description: Idempotently grants the selected group access only to the Genie view.
+      tasks:
+        - task_key: grant_curated_view
+          sql_task:
+            file:
+              path: ../sql/grant_telemetry_history.sql
+            warehouse_id: ${var.warehouse_id}
+            parameters:
+              catalog_name: ${var.catalog}
+              schema_fqn: ${var.catalog}.${var.schema}
+              view_fqn: ${var.catalog}.${var.schema}.pump_telemetry_history
+              telemetry_analysis_group: ${var.production_reference_access_group}
+
+    telemetry_producer:
+      name: Asset Reliability — continuous pump telemetry producer
+      description: Paused Kafka reference producer; Spark Rate remains the active demo source.
+      continuous:
+        pause_status: PAUSED
+      max_concurrent_runs: 1
+      run_as:
+        service_principal_name: ${resources.apps.command_center.service_principal_client_id}
+      job_clusters:
+        - job_cluster_key: producer_cluster
+          new_cluster:
+            policy_id: ${resources.cluster_policies.asset_reliability_workloads.id}
+            spark_version: 17.3.x-scala2.13
+            node_type_id: i3.xlarge
+            num_workers: 0
+            data_security_mode: SINGLE_USER
+            spark_conf:
+              spark.master: local[*, 4]
+              spark.databricks.cluster.profile: singleNode
+            custom_tags:
+              ResourceClass: SingleNode
+              Workload: asset-reliability-producer
+            aws_attributes:
+              availability: ON_DEMAND
+      tasks:
+        - task_key: produce_telemetry
+          job_cluster_key: producer_cluster
+          notebook_task:
+            notebook_path: ../src/producer/pump_telemetry_producer.py
+            base_parameters:
+              kafka_bootstrap: ${var.kafka_bootstrap}
+              kafka_topic: ${var.kafka_topic}
+              lakebase_endpoint: projects/${var.lakebase_project_id}/branches/${var.lakebase_branch_name}/endpoints/${var.lakebase_endpoint_name}
+              lakebase_database: ${var.lakebase_database_name}
+              lakebase_schema: ${var.lakebase_schema}
+              rate_hz: "2"
+              run_seconds: "0"
+          libraries:
+            - pypi:
+                package: databricks-sdk==0.142.0
+            - pypi:
+                package: kafka-python-ng==2.2.3
+            - pypi:
+                package: psycopg[binary]==3.2.10
+
+    governed_telemetry_history_continuous:
+      name: Asset Reliability — continuous governed telemetry history
+      description: Paused production-reference Kafka-to-Unity-Catalog pipeline runner.
+      continuous:
+        pause_status: PAUSED
+      max_concurrent_runs: 1
+      run_as:
+        service_principal_name: ${resources.apps.command_center.service_principal_client_id}
+      tasks:
+        - task_key: run_governed_telemetry_pipeline
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.governed_telemetry_history.id}
+            full_refresh: false
+
+  pipelines:
+    governed_telemetry_history:
+      name: Asset Reliability — governed telemetry history
+      run_as:
+        service_principal_name: ${resources.apps.command_center.service_principal_client_id}
+      catalog: ${var.catalog}
+      schema: ${var.schema}
+      edition: ADVANCED
+      channel: CURRENT
+      serverless: false
+      photon: true
+      cascade_on_destroy: false
+      libraries:
+        - notebook:
+            path: ../src/pipelines/governed_telemetry_history.sql
+      configuration:
+        kafka_bootstrap: ${var.kafka_bootstrap}
+        kafka_topic: ${var.kafka_topic}
+        kafka_starting_offsets: latest
+      clusters:
+        - label: default
+          policy_id: ${resources.cluster_policies.asset_reliability_workloads.id}
+          node_type_id: ${var.telemetry_pipeline_node_type}
+          num_workers: 1
+          aws_attributes:
+            availability: ON_DEMAND
+          custom_tags:
+            Workload: asset-reliability-governed-history
+      permissions:
+        - level: CAN_VIEW
+          group_name: ${var.production_reference_access_group}
+        - level: CAN_RUN
+          service_principal_name: ${resources.apps.command_center.service_principal_client_id}
+
+  genie_spaces:
+    fleet_telemetry_analyst:
+      title: Asset Reliability — Fleet Telemetry Analyst
+      description: Natural-language analysis of continuous governed pump telemetry history.
+      warehouse_id: ${var.warehouse_id}
+      parent_path: ${var.genie_parent_path}
+      file_path: ../genie/fleet_telemetry_analyst.geniespace.json
+      permissions:
+        - level: CAN_RUN
+          group_name: ${var.production_reference_access_group}
