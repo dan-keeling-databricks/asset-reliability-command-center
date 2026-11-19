@@ -35,7 +35,7 @@ def test_app_identity_and_lakebase_paths_are_derived_by_the_bundle() -> None:
     assert "databases/databricks-postgres" in source
     assert "endpoints/primary" in source
     assert "lakebase_database: databricks_postgres" in source
-    assert "lakebase_schema: ${var.lakebase_schema}" in source
+    assert "value: ${var.lakebase_schema}" in source
 
 
 def test_app_runtime_configuration_is_parameterised_in_the_bundle() -> None:

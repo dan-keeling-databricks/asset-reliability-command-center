@@ -50,8 +50,6 @@ def test_bundle_deploy_runs_the_required_bootstrap_jobs() -> None:
 
     assert set(job_runs) == {
         "run_setup_unity_governance",
-        "run_setup_runtime_principal_access",
-        "run_migrate_lakebase_schema",
         "run_setup_agent_observability_access",
         "run_reconcile_governance",
     }
@@ -65,7 +63,6 @@ def test_bundle_deploy_runs_the_required_bootstrap_jobs() -> None:
     assert governance_dependencies == {
         "apps.command_center",
         "job_runs.run_setup_unity_governance",
-        "job_runs.run_migrate_lakebase_schema",
         "job_runs.run_setup_agent_observability_access",
     }
 
@@ -83,22 +80,19 @@ def test_schema_backed_resources_have_explicit_creation_order() -> None:
         ]
 
 
-def test_continuous_rtm_waits_for_the_lakebase_migration() -> None:
+def test_continuous_rtm_waits_for_the_app_owned_lakebase_schema() -> None:
     rtm = bundle()["resources"]["jobs"]["telemetry_rtm"]
 
     assert rtm["continuous"]["pause_status"] == "UNPAUSED"
-    assert rtm["lifecycle"]["depends_on"] == [
-        {"resource": "job_runs.run_migrate_lakebase_schema"}
-    ]
-    assert rtm["run_as"]["service_principal_name"] == (
-        "${resources.apps.command_center.service_principal_client_id}"
-    )
+    assert rtm["lifecycle"]["depends_on"] == [{"resource": "apps.command_center"}]
+    assert rtm["run_as"]["user_name"] == "${workspace.current_user.userName}"
+    assert "migrate_lakebase_schema" not in bundle()["resources"]["jobs"]
+    assert "setup_runtime_principal_access" not in bundle()["resources"]["jobs"]
 
 
 def test_runtime_jobs_use_the_public_source_at_the_bundle_commit() -> None:
     jobs = bundle()["resources"]["jobs"]
     for key in (
-        "migrate_lakebase_schema",
         "telemetry_rtm",
         "evaluate_agent_traces",
         "reconcile_governance",

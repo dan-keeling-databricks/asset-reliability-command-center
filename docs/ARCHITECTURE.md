@@ -80,17 +80,15 @@ The deployed personal-sandbox path keeps its low-latency working state in Lakeba
 from the earlier Kafka/Lakeflow/Genie build remains an archive and is not presented as current
 execution evidence.
 
-The standalone RTM job executes as the existing App service principal. A bundle-managed
+The standalone RTM job executes as the customer who deploys the dedicated demo. A bundle-managed
 least-privilege compute policy limits it to the approved fixed-size classic shape, runtime and
-on-demand availability. A DAB-managed, idempotent setup job gives that identity only the Unity
-Catalog Volume access required by the workload. Runtime job source is pinned to the public Git
-commit selected by the bundle deployment.
+on-demand availability. Runtime job source is pinned to the public Git commit selected by the
+bundle deployment.
 
-Lakebase schema upgrades use a separate one-shot classic job with the same App service-principal
-run-as identity. It applies the repository's idempotent PostgreSQL migration, verifies the exact
-lease and approval-claim columns required by current code, and must succeed before the deployment
-starts the standalone RTM job. This preserves App ownership of the operational schema and prevents
-new workload source from racing an older database contract.
+The App applies the idempotent Lakebase migration during startup as its own service principal,
+preserving App ownership of the operational schema. DAB waits for the App to start before creating
+the continuous RTM job, so telemetry cannot race an older database contract. This avoids a second
+classic-compute cold start and any account-level impersonation grant during customer installation.
 
 ## Databricks App and autonomous AI experience
 
