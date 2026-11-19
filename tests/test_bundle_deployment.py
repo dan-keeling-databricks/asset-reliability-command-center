@@ -29,6 +29,7 @@ def test_bundle_deploy_builds_the_app_and_starts_it() -> None:
     config = bundle()
     app = config["resources"]["apps"]["command_center"]
 
+    assert (ROOT / ".artifacts/app/.gitkeep").is_file()
     assert config["bundle"]["databricks_cli_version"] == ">=1.26.0"
     assert config["artifacts"]["app"]["build"] == "./scripts/build_app.sh"
     assert app["source_code_path"] == "./.artifacts/app"

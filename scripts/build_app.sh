@@ -14,6 +14,7 @@ fi
 
 rm -rf "${APP_BUILD_DIR}"
 mkdir -p "${APP_BUILD_DIR}/frontend" "${APP_BUILD_DIR}/sql"
+touch "${APP_BUILD_DIR}/.gitkeep"
 
 (
   cd "${PROJECT_ROOT}"
