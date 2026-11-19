@@ -7,9 +7,12 @@ import asyncio
 import json
 import os
 import time
+from collections.abc import Coroutine
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
+from typing import Any, TypeVar
 from urllib.parse import urlparse
 
 from databricks.sdk import WorkspaceClient
@@ -31,6 +34,7 @@ TOOLS = [
     "prepare_work_order",
     "submit_work_order",
 ]
+T = TypeVar("T")
 
 
 @dataclass(frozen=True)
@@ -501,6 +505,17 @@ async def probe_submit_policy(
     raise RuntimeError("Unity Gateway deployment probe exhausted without success")
 
 
+def run_coroutine(coroutine: Coroutine[Any, Any, T]) -> T:
+    """Run a blocking deployment probe inside ordinary or serverless Python tasks."""
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coroutine)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        return executor.submit(asyncio.run, coroutine).result()
+
+
 def main() -> None:
     """Deploy governance dependencies in their required dependency order."""
 
@@ -516,7 +531,7 @@ def main() -> None:
     connection, connection_status = ensure_connection(client, app, config)
     service, service_status = ensure_service(client, function.function_id, config)
     user_permissions = ensure_user_permissions(client, config)
-    policy_probe = asyncio.run(probe_submit_policy(client, config))
+    policy_probe = run_coroutine(probe_submit_policy(client, config))
 
     print(
         json.dumps(

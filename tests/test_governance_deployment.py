@@ -18,6 +18,7 @@ from scripts.deploy_governance import (
     ensure_user_permissions,
     probe_submit_policy,
     resolve_skill_directory,
+    run_coroutine,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -44,6 +45,14 @@ def test_skill_source_resolves_without_module_file(monkeypatch) -> None:
     assert resolve_skill_directory("asset-reliability-response") == (
         ROOT / "skills/asset-reliability-response"
     )
+
+
+@pytest.mark.asyncio
+async def test_blocking_probe_runner_is_safe_inside_serverless_event_loop() -> None:
+    async def result() -> str:
+        return "validated"
+
+    assert run_coroutine(result()) == "validated"
 
 
 def test_governance_configuration_has_no_maintainer_defaults(monkeypatch) -> None:
