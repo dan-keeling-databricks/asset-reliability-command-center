@@ -1,5 +1,7 @@
 # Asset Reliability Command Centre
 
+> **[Quick Start → Deploy the demo in your Databricks workspace](docs/QUICK_START.md)**
+
 Asset Reliability Command Centre is a customer-facing Databricks reference demo for detecting
 industrial pump risk, investigating it with an autonomous agent, and governing the resulting
 maintenance action with a real human approval.
@@ -153,8 +155,8 @@ export BUNDLE_VAR_workload_node_type="i3.xlarge"
 databricks bundle deploy --target customer --profile "${DEMO_PROFILE}"
 ```
 
-See the short [customer installation guide](docs/CUSTOMER_DEPLOYMENT.md) for prerequisites and
-how to display the resulting App URL.
+For a guided walkthrough, follow the [Quick Start](docs/QUICK_START.md). The
+[customer installation guide](docs/CUSTOMER_DEPLOYMENT.md) provides the compact command reference.
 
 ## Local development
 
@@ -198,6 +200,7 @@ No customer data, credentials or generated secrets belong in this repository.
 
 ## Documentation
 
+- [Quick Start](docs/QUICK_START.md)
 - [Business demo flow](DEMO.md)
 - [Technical architecture](docs/ARCHITECTURE.md)
 - [Customer installation](docs/CUSTOMER_DEPLOYMENT.md)
