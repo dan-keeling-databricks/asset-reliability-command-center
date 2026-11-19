@@ -415,13 +415,13 @@ resources:
           - name: MLFLOW_TRACING_SQL_WAREHOUSE_ID
             value_from: sql-warehouse
           - name: GOVERNED_MCP_ENDPOINT
-            value: ${workspace.host}/ai-gateway/mcp-services/${var.catalog}.${var.schema}.${var.mcp_service_name}
+            value: /ai-gateway/mcp-services/${var.catalog}.${var.schema}.${var.mcp_service_name}
           - name: GOVERNED_SKILL_ENDPOINT
-            value: ${workspace.host}/ai-gateway/skills/?schema=${var.catalog}.${var.schema}
+            value: /ai-gateway/skills/?schema=${var.catalog}.${var.schema}
           - name: GOVERNED_SKILL_TOOL
             value: skill_${var.catalog}.${var.schema}.${var.governed_skill_name}
           - name: GOVERNED_SKILL_DOCUMENT_URL
-            value: ${workspace.host}/api/2.0/fs/files/Skills/${var.catalog}/${var.schema}/${var.governed_skill_name}/SKILL.md
+            value: /api/2.0/fs/files/Skills/${var.catalog}/${var.schema}/${var.governed_skill_name}/SKILL.md
           - name: LAKEBASE_SCHEMA
             value: ${var.lakebase_schema}
           - name: GLOBAL_AGENT_CONCURRENCY

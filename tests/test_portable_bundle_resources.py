@@ -48,8 +48,15 @@ def test_app_runtime_configuration_is_parameterised_in_the_bundle() -> None:
         "agent-mlflow-experiment"
     )
     assert environment["GOVERNED_MCP_ENDPOINT"]["value"].startswith(
-        "${workspace.host}/ai-gateway/mcp-services/"
+        "/ai-gateway/mcp-services/"
     )
+    assert environment["GOVERNED_SKILL_ENDPOINT"]["value"].startswith(
+        "/ai-gateway/skills/"
+    )
+    assert environment["GOVERNED_SKILL_DOCUMENT_URL"]["value"].startswith(
+        "/api/2.0/fs/files/Skills/"
+    )
+    assert "${workspace.host}" not in BUNDLE_PATH.read_text(encoding="utf-8")
     assert environment["GOVERNED_SKILL_TOOL"]["value"].startswith("skill_${var.catalog}")
     assert not (ROOT / "app.yaml.template").exists()
 
