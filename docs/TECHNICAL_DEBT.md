@@ -72,8 +72,8 @@ tests and the maintainer gate verify artifact freshness and contents before a re
 
 ### Architecture and runbook drift
 
-**Resolved.** README, demo narrative, architecture, deployment, task, debt, and evidence documents
-now describe personal Rate sandboxes, LangGraph, Unity Gateway Model Service, MLflow, strengthened
+**Resolved.** README, demo narrative, architecture, deployment, task, and debt documents now
+describe personal Rate sandboxes, LangGraph, Unity Gateway Model Service, MLflow, strengthened
 governance, customer portability, and the DAB-first deployment path.
 
 ### Bundle root used as the App snapshot

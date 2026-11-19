@@ -279,10 +279,8 @@ to infer sandbox identity at the source boundary.
 9. Verify RTM physical plan uses `RealTimeStreamScan` and the Rate source.
 10. Verify App health, Rate RTM heartbeat, slot utilisation and source-to-App latency.
 
-## Documentation and evidence
+## Documentation
 
-- Preserve historical committed Kafka execution evidence as an explicitly dated archive.
-- Add new evidence only from a genuine deployed Rate-source run.
 - README, Architecture, Deployment, Demo and Tasks must distinguish:
   - deployed synthetic demo: Spark Rate -> RTM -> Lakebase;
   - production reference visual: Kafka -> RTM -> Lakebase.

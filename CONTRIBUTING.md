@@ -25,7 +25,7 @@ when that is unavoidable, agree ownership and integration order first.
 4. Run the complete validation suite documented in `AGENTS.md`.
 5. Update architecture, deployment, demo, or task documentation when behavior changes.
 6. Commit with a concise imperative subject and push the feature branch.
-7. Review and merge into `main` only after local and deployed validation evidence is recorded.
+7. Review and merge into `main` only after the required local and deployed validation has passed.
 
 ## Deployment policy
 

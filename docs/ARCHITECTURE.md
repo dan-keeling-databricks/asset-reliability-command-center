@@ -76,9 +76,7 @@ Kafka producer, SQL Lakeflow pipeline and Genie assets for that reference and fo
 rollback, but the personal-sandbox deployment does not run or health-check those continuous jobs.
 
 Lakehouse Sink is the durable route for long-term operational telemetry plus LLM and MCP traces.
-The deployed personal-sandbox path keeps its low-latency working state in Lakebase; dated evidence
-from the earlier Kafka/Lakeflow/Genie build remains an archive and is not presented as current
-execution evidence.
+The deployed personal-sandbox path keeps its low-latency working state in Lakebase.
 
 The standalone RTM job executes as the customer who deploys the dedicated demo. A bundle-managed
 least-privilege compute policy limits it to the approved fixed-size classic shape, runtime and
@@ -205,5 +203,5 @@ cannot enter the snapshot. Deployment is repository-first and driven by `databri
 | `sql/` | Lakebase schema, view grants, and Gateway policy function |
 | `scripts/` | Checked deployment and idempotent data/governance helpers |
 | `tests/` | API, runtime, governance, data-plane, concurrency, and deployment contracts |
-| `docs/` | Architecture, deployment, evidence, and technical-debt records |
+| `docs/` | Architecture, deployment, and technical-debt records |
 | `.artifacts/app/` | Ignored, reproducibly generated runtime-only App snapshot source |

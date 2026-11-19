@@ -27,6 +27,6 @@ EXECUTE IMMEDIATE concat(
   replace(telemetry_reader_group, '`', '``'), '`'
 ) USING telemetry_view_fqn;
 
--- Text-readable verification output for deployment logs and the curated evidence package.
+-- Text-readable verification output for deployment logs.
 SHOW GRANTS
 ON VIEW IDENTIFIER(telemetry_view_fqn);

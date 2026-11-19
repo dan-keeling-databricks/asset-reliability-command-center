@@ -1,5 +1,5 @@
 -- Unity Gateway custom policy contract.
--- Only the final work-order submission pauses for native human authorization; evidence reads
+-- Only the final work-order submission pauses for native human authorization; data reads
 -- and proposal preparation remain autonomous. The final SELECT is a deployment smoke test.
 
 CREATE OR REPLACE FUNCTION

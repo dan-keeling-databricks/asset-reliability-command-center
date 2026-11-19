@@ -175,7 +175,7 @@ FROM STREAM(telemetry_parsed);
 -- MAGIC
 -- MAGIC Quarantine applies the same predicates as Silver and retains only failures. The
 -- MAGIC comma-separated reason makes malformed or physically impossible messages readable as
--- MAGIC text evidence. This table is intentionally not granted to the App access group.
+-- MAGIC diagnostic output. This table is intentionally not granted to the App access group.
 
 -- COMMAND ----------
 

@@ -154,8 +154,7 @@ npm --prefix frontend ci
 ```
 
 Open `http://127.0.0.1:5173`. `APP_ADAPTER=local` provides deterministic development data. It is
-not evidence that the governed Databricks journey works; that requires live acceptance in the
-target workspace.
+not a substitute for live acceptance of the governed Databricks journey in the target workspace.
 
 ## Validation
 
@@ -183,36 +182,13 @@ controls.
 
 No customer data, credentials or generated secrets belong in this repository.
 
-## Historical Kafka-build execution evidence
-
-The earlier Kafka-based build is retained as dated, text-readable validator evidence; it is not
-presented as proof of the current Rate-source implementation. Its accepted run recorded:
-
-```text
-telemetry_bronze       3,884,768
-telemetry_silver       3,884,704
-P-204 | 7.6
-Failure risk 96% (high)
-WO-35374 scheduled
-{"end_to_end_latency_ms": 90}
-```
-
-The complete identifiers, SQL, tool sequence and governance receipt are in
-[Historical Kafka-build Databricks execution evidence](DATABRICKS_END_TO_END_EXECUTION_EVIDENCE.md).
-
-## Documentation and evidence
+## Documentation
 
 - [Business demo flow](DEMO.md)
 - [Technical architecture](docs/ARCHITECTURE.md)
 - [Customer installation](docs/CUSTOMER_DEPLOYMENT.md)
 - [Customer configuration worksheet](docs/examples/customer-values.example.yml)
-- [Customer clean-install validation record](docs/CUSTOMER_INSTALL_VALIDATION.md)
 - [Manual deployment and live acceptance](docs/DEPLOYMENT.md)
 - [Technical debt and accepted trade-offs](docs/TECHNICAL_DEBT.md)
 - [Current implementation status](TASKS.md)
 - [Contribution and branching model](CONTRIBUTING.md)
-- [Historical Kafka-build execution evidence](DATABRICKS_END_TO_END_EXECUTION_EVIDENCE.md)
-- [Detailed evidence archive](evidence/README.md)
-
-The historical evidence proves the earlier Kafka-based integrated build only. It is retained for
-auditability and does not claim execution of the current personal-sandbox Rate-source build.

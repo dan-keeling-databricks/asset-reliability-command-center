@@ -37,8 +37,8 @@ EXECUTE IMMEDIATE concat(
   replace(runtime_principal, '`', '``'), '`'
 ) USING runtime_volume_fqn;
 
--- Produce portable, text-readable evidence without relying on SHOW GRANTS support for
--- parameterised object identifiers.
+-- Produce portable diagnostic output without relying on SHOW GRANTS support for parameterised
+-- object identifiers.
 SELECT 'CATALOG' AS object_type, catalog_name AS object_name, privilege_type
 FROM system.information_schema.catalog_privileges
 WHERE catalog_name = runtime_catalog AND grantee = runtime_principal

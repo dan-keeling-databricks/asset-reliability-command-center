@@ -323,8 +323,8 @@ print(f"Rate RTM query started: {query.id}")
 # MAGIC ## Run continuously or return bounded diagnostics
 # MAGIC
 # MAGIC Production waits for termination so the continuous Lakeflow Job supervises failures. A
-# MAGIC positive diagnostic duration returns recent structured progress for text-based acceptance
-# MAGIC evidence without changing the deployed query contract.
+# MAGIC positive diagnostic duration returns recent structured progress without changing the
+# MAGIC deployed query contract.
 
 # COMMAND ----------
 

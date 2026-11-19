@@ -263,8 +263,7 @@ print(f"RTM query started: {query.id}")
 # MAGIC Production sets `diagnostic_seconds` to zero and waits for termination so the Lakeflow Job
 # MAGIC can supervise failures and replacement runs. A positive diagnostic duration stops the query
 # MAGIC and returns recent structured progress, including latency and sink-row metrics, as notebook
-# MAGIC output
-# MAGIC suitable for text-based acceptance evidence.
+# MAGIC output suitable for diagnostics.
 
 # COMMAND ----------
 
