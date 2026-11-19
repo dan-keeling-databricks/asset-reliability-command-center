@@ -1,5 +1,6 @@
 """Deployment reconciliation tests for the governed MCP service."""
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -16,7 +17,10 @@ from scripts.deploy_governance import (
     ensure_service,
     ensure_user_permissions,
     probe_submit_policy,
+    resolve_skill_directory,
 )
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def config() -> GovernanceConfig:
@@ -30,6 +34,15 @@ def config() -> GovernanceConfig:
         service_id="asset_reliability_mcp",
         policy_function_name="submit_work_order_policy",
         uc_audience="customer-users",
+    )
+
+
+def test_skill_source_resolves_without_module_file(monkeypatch) -> None:
+    monkeypatch.delitem(deployment.__dict__, "__file__", raising=False)
+    monkeypatch.chdir(ROOT)
+
+    assert resolve_skill_directory("asset-reliability-response") == (
+        ROOT / "skills/asset-reliability-response"
     )
 
 

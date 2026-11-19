@@ -91,6 +91,20 @@ class GovernanceConfig:
         )
 
 
+def resolve_skill_directory(skill_id: str) -> Path:
+    """Locate Skill source in either a normal module or a Git-backed Spark task."""
+
+    roots = [Path.cwd(), *Path.cwd().parents]
+    module_file = globals().get("__file__")
+    if module_file:
+        roots.insert(0, Path(str(module_file)).resolve().parents[1])
+    for root in dict.fromkeys(roots):
+        candidate = root / "skills" / skill_id
+        if (candidate / "SKILL.md").is_file():
+            return candidate
+    raise RuntimeError(f"Unable to locate governed Skill source for {skill_id!r}")
+
+
 def ensure_source_app_permission(
     client: WorkspaceClient, app, config: GovernanceConfig
 ) -> bool:
@@ -131,7 +145,7 @@ def deploy_skill(client: WorkspaceClient, config: GovernanceConfig) -> dict[str,
         )
         created = True
 
-    skill_directory = Path(__file__).parents[1] / "skills" / config.skill_id
+    skill_directory = resolve_skill_directory(config.skill_id)
     uploaded: list[str] = []
     for local_path in skill_directory.rglob("*"):
         if not local_path.is_file():
