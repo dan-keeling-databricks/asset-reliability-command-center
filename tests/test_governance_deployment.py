@@ -175,6 +175,51 @@ def test_failed_connection_rotates_credential_even_without_visible_drift() -> No
     assert reconciled.provisioning_info.state == ProvisioningInfoState.ACTIVE
 
 
+def test_new_connection_retries_transient_oauth_credential_propagation(monkeypatch) -> None:
+    attempts: list[dict[str, str]] = []
+    sleeps: list[float] = []
+
+    app = SimpleNamespace(
+        url="https://app.example",
+        service_principal_client_id="app-sp",
+        service_principal_id=123,
+    )
+
+    class Connections:
+        def get(self, _name):
+            raise deployment.NotFound("missing")
+
+        def create(self, **kwargs):
+            attempts.append(kwargs)
+            if len(attempts) < 3:
+                raise RuntimeError(
+                    "OAuth token exchange failed: invalid_request while credential propagates"
+                )
+            return SimpleNamespace(full_name="connection")
+
+    class Secrets:
+        def create(self, _principal_id, lifetime):
+            assert lifetime == "31536000s"
+            return SimpleNamespace(secret="fresh-secret", id="secret-id")
+
+        def delete(self, _principal_id, _secret_id):
+            raise AssertionError("Successful retry must retain its credential")
+
+    client = SimpleNamespace(
+        config=SimpleNamespace(host="https://workspace.example"),
+        connections=Connections(),
+        service_principal_secrets_proxy=Secrets(),
+    )
+    monkeypatch.setattr(deployment.time, "sleep", sleeps.append)
+
+    connection, status = ensure_connection(client, app, config())
+
+    assert connection.full_name == "connection"
+    assert status == "created"
+    assert len(attempts) == 3
+    assert sleeps == [5.0, 10.0]
+
+
 def test_service_drift_is_patched_to_declared_tools_and_ask_policy() -> None:
     calls: list[tuple[str, str, dict | None, dict | None]] = []
     current = {"include_tool_selectors": ["stale"]}

@@ -202,6 +202,38 @@ def _connection_provisioning_failed(connection) -> bool:
     return getattr(provisioning_info, "state", None) == ProvisioningInfoState.FAILED
 
 
+def _oauth_credential_is_propagating(error: Exception) -> bool:
+    message = str(error).casefold()
+    return "oauth token exchange failed" in message and "invalid_request" in message
+
+
+def _create_connection_with_retry(
+    client: WorkspaceClient,
+    config: GovernanceConfig,
+    options: dict[str, str],
+    *,
+    max_attempts: int = 6,
+    retry_delay_seconds: float = 5.0,
+):
+    """Create after the new App credential becomes visible to the OAuth endpoint."""
+
+    for attempt in range(max_attempts):
+        if attempt:
+            time.sleep(min(retry_delay_seconds * (2 ** (attempt - 1)), 30.0))
+        try:
+            return client.connections.create(
+                name=config.connection_id,
+                connection_type=ConnectionType.HTTP,
+                comment="App-hosted maintenance MCP tools for Asset Reliability",
+                read_only=False,
+                options=options,
+            )
+        except Exception as error:
+            if attempt + 1 >= max_attempts or not _oauth_credential_is_propagating(error):
+                raise
+    raise AssertionError("OAuth connection retry loop exhausted")
+
+
 def ensure_connection(
     client: WorkspaceClient, app, config: GovernanceConfig
 ) -> tuple[object, str]:
@@ -216,12 +248,10 @@ def ensure_connection(
             str(app.service_principal_id), lifetime="31536000s"
         )
         try:
-            connection = client.connections.create(
-                name=config.connection_id,
-                connection_type=ConnectionType.HTTP,
-                comment="App-hosted maintenance MCP tools for Asset Reliability",
-                read_only=False,
-                options=_connection_options(client, app, secret.secret),
+            connection = _create_connection_with_retry(
+                client,
+                config,
+                _connection_options(client, app, secret.secret),
             )
         except Exception:
             # Avoid leaving an unreferenced App-SP credential if connection creation fails.
