@@ -9,7 +9,6 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_app_uses_unity_gateway_model_service_and_managed_experiment() -> None:
     bundle = (ROOT / "databricks.yml").read_text()
-    app = (ROOT / "app.yaml.template").read_text()
 
     assert "model_services:" in bundle
     assert "DESTINATION_TYPE_PAY_PER_TOKEN_FOUNDATION_MODEL" in bundle
@@ -17,15 +16,15 @@ def test_app_uses_unity_gateway_model_service_and_managed_experiment() -> None:
     assert "securable_type: MODEL_SERVICE" in bundle
     assert "permission: EXECUTE" in bundle
     assert "serving_endpoint:" not in bundle.split("  apps:", maxsplit=1)[1]
-    assert "valueFrom: agent-model-service" in app
+    assert "value_from: agent-model-service" in bundle
 
     assert "experiments:" in bundle
     assert "uc_trace_location:" in bundle
     assert "table_prefix: ${var.mlflow_trace_table_prefix}" in bundle
-    assert 'value: "{{mlflow_trace_table_prefix}}"' in app
+    assert "value: ${var.mlflow_trace_table_prefix}" in bundle
     assert "permission: CAN_EDIT" in bundle
-    assert "valueFrom: agent-mlflow-experiment" in app
-    assert "valueFrom: sql-warehouse" in app
+    assert "value_from: agent-mlflow-experiment" in bundle
+    assert "value_from: sql-warehouse" in bundle
 
 
 def test_observability_grants_are_explicit_and_least_privilege() -> None:

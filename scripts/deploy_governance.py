@@ -36,7 +36,7 @@ TOOLS = [
 class GovernanceConfig:
     """Explicit, customer-owned names for governed deployment resources."""
 
-    profile: str
+    profile: str | None
     catalog: str
     schema: str
     app_name: str
@@ -70,7 +70,6 @@ class GovernanceConfig:
     @classmethod
     def from_environment(cls) -> GovernanceConfig:
         names = {
-            "profile": "DATABRICKS_CONFIG_PROFILE",
             "catalog": "ASSET_RELIABILITY_CATALOG",
             "schema": "ASSET_RELIABILITY_SCHEMA",
             "app_name": "ASSET_RELIABILITY_APP_NAME",
@@ -86,7 +85,10 @@ class GovernanceConfig:
             raise RuntimeError(
                 "Missing explicit governance deployment settings: " + ", ".join(missing)
             )
-        return cls(**values)
+        return cls(
+            profile=os.getenv("DATABRICKS_CONFIG_PROFILE", "").strip() or None,
+            **values,
+        )
 
 
 def ensure_source_app_permission(
@@ -426,7 +428,7 @@ def main() -> None:
     """Deploy governance dependencies in their required dependency order."""
 
     config = GovernanceConfig.from_environment()
-    client = WorkspaceClient(profile=config.profile)
+    client = WorkspaceClient(profile=config.profile) if config.profile else WorkspaceClient()
     app = client.apps.get(config.app_name)
     if not app.url or not app.service_principal_id or not app.service_principal_client_id:
         raise RuntimeError("Deploy and start the Databricks App before configuring governance")

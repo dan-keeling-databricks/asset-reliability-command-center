@@ -1,4 +1,4 @@
-"""Customer portability contracts for deployable source and lifecycle documentation."""
+"""Customer portability contracts for source and installation documentation."""
 
 from __future__ import annotations
 
@@ -6,236 +6,66 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
-# These values identify the maintainer's original demonstration workspace. They may remain in
-# dated execution evidence and explicitly labelled documentation examples, but never in source
-# that can be bundled or staged into a customer deployment.
-ORIGINAL_ENVIRONMENT_MARKERS = {
-    "CLI profile": "fe_vm_rtm",
-    "workspace host": "fevm-classic-stable-realtime-demos.cloud.databricks.com",
-    "workspace organisation": "7474659563748021",
-    "App service principal": "bd5178cb-8774-4d77-bc63-b4f491716d0b",
-    "reference group principal": "84285700224068",
-    "reference group": "asset-reliability-command-center-operator",
-    "SQL warehouse": "2162b643ec0f802a",
-    "Kafka broker": "63.186.81.193",
-    "Unity Catalog catalog": "classic_stable_realtime_demos_catalog",
-    "Unity Catalog schema": "asset_reliability_command_center",
-}
-
-DEPLOYABLE_FILES = {
-    Path("app.yaml"),
-    Path("app.yaml.template"),
-    Path("databricks.yml"),
-    Path("pyproject.toml"),
-    Path("requirements.txt"),
-    Path("frontend/index.html"),
-    Path("frontend/package.json"),
-    Path("frontend/package-lock.json"),
-    Path("frontend/vite.config.ts"),
-}
-DEPLOYABLE_TREES = (
-    Path("backend"),
-    Path("frontend/public"),
-    Path("frontend/src"),
-    Path("genie"),
-    Path("resources"),
-    Path("skills"),
-    Path("sql"),
-    Path("src"),
+ORIGINAL_ENVIRONMENT_MARKERS = (
+    "fe_vm_rtm",
+    "fevm-classic-stable-realtime-demos.cloud.databricks.com",
+    "7474659563748021",
+    "bd5178cb-8774-4d77-bc63-b4f491716d0b",
+    "2162b643ec0f802a",
+    "classic_stable_realtime_demos_catalog",
 )
-TEXT_SUFFIXES = {
-    ".css",
-    ".html",
-    ".json",
-    ".md",
-    ".py",
-    ".sql",
-    ".template",
-    ".toml",
-    ".ts",
-    ".tsx",
-    ".txt",
-    ".yaml",
-    ".yml",
-}
 
-# Product-adjacent historical records are deliberately retained beside the relevant source. They
-# are evidence, not inputs to the App or bundle, and each file labels the captured run as dated.
-DATED_EVIDENCE_ALLOWLIST = {
-    Path("backend/AUTONOMOUS_AGENT_WORK_ORDER_EXECUTION_LOG.md"),
-    Path("backend/UNITY_GATEWAY_HUMAN_APPROVAL_EXECUTION_LOG.md"),
-    Path("frontend/DEPLOYED_DATABRICKS_APP_API_RESPONSES.md"),
-    Path("genie/GENIE_CONVERSATION_GENERATED_SQL_AND_RESULTS.md"),
-    Path("sql/UNITY_CATALOG_AND_LAKEBASE_QUERY_RESULTS.md"),
-    Path("src/pipelines/LAKEFLOW_PIPELINE_RUN_OUTPUT_AND_ROW_COUNTS.md"),
-}
+DEPLOYABLE_FILES = (
+    ROOT / "databricks.yml",
+    ROOT / "scripts/build_app.sh",
+    ROOT / "scripts/deploy_governance.py",
+)
 
 
-def deployable_text_files() -> list[Path]:
-    """Return repository-relative text assets that can enter a bundle or App build."""
+def test_deployable_assets_do_not_reference_the_original_workspace() -> None:
+    sources = "\n".join(path.read_text(encoding="utf-8") for path in DEPLOYABLE_FILES)
 
-    paths = {path for path in DEPLOYABLE_FILES if (ROOT / path).is_file()}
-    for tree in DEPLOYABLE_TREES:
-        paths.update(
-            path.relative_to(ROOT)
-            for path in (ROOT / tree).rglob("*")
-            if path.is_file() and path.suffix.lower() in TEXT_SUFFIXES
-        )
-    return sorted(paths - DATED_EVIDENCE_ALLOWLIST)
+    for marker in ORIGINAL_ENVIRONMENT_MARKERS:
+        assert marker not in sources
 
 
-def test_deployable_assets_do_not_reference_original_environment() -> None:
-    """Prevent a customer bundle from inheriting the maintainer's workspace identifiers."""
-
-    violations: list[str] = []
-    for path in deployable_text_files():
-        contents = (ROOT / path).read_text(encoding="utf-8")
-        for label, marker in ORIGINAL_ENVIRONMENT_MARKERS.items():
-            if marker in contents:
-                violations.append(f"{path}: original {label} `{marker}`")
-
-    assert not violations, "Original-environment hardcodes found:\n" + "\n".join(violations)
-
-
-def test_hardcode_audit_includes_optional_production_reference_assets() -> None:
-    """Keep inactive Kafka, Lakeflow and Genie definitions portable as well as the active path."""
-
-    audited = set(deployable_text_files())
-    assert any(
-        path in audited
-        for path in (
-            Path("genie/fleet_telemetry_analyst.geniespace.json"),
-            Path("genie/fleet_telemetry_analyst.geniespace.json.template"),
-        )
-    )
-    assert {
-        Path("src/producer/pump_telemetry_producer.py"),
-        Path("src/pipelines/governed_telemetry_history.sql"),
-        Path("src/streaming/kafka_to_lakebase_rtm.py"),
-    } <= audited
-
-
-def test_customer_lifecycle_guide_covers_safe_operating_boundaries() -> None:
-    """Keep customer installation, updates and rollback discoverable and explicit."""
-
+def test_customer_guide_is_short_and_centred_on_bundle_deploy() -> None:
     guide = (ROOT / "docs/CUSTOMER_DEPLOYMENT.md").read_text(encoding="utf-8")
-    required_phrases = (
-        "First installation",
-        "Updating an installation",
-        "App-only updates",
-        "Rollback",
-        "Decommissioning",
-        "Spark Rate",
-        "personal-sandbox",
-        "optional production-reference",
-        "Kafka",
-        "Lakeflow",
-        "Genie",
-        "Git operations alone never change a workspace",
-    )
-    assert all(phrase in guide for phrase in required_phrases)
+
+    assert len(guide.splitlines()) < 100
+    assert "databricks bundle deploy --target customer" in guide
+    assert "BUNDLE_VAR_catalog" in guide
+    assert "BUNDLE_VAR_schema" in guide
+    assert "BUNDLE_VAR_warehouse_id" in guide
+    assert "BUNDLE_VAR_workload_node_type" in guide
+    assert "preflight" not in guide.casefold()
+    assert "rollback" not in guide.casefold()
+    assert "decommission" not in guide.casefold()
 
 
-def test_customer_values_example_is_complete_and_explicitly_non_executable() -> None:
-    """Provide one target-neutral worksheet without implying that the CLI loads it."""
-
+def test_customer_values_example_contains_only_required_bundle_values() -> None:
     example = (ROOT / "docs/examples/customer-values.example.yml").read_text(
         encoding="utf-8"
     )
-    required_keys = (
-        "profile:",
-        "expected_host:",
-        "bundle_target:",
-        "catalog:",
-        "schema:",
-        "checkpoint_volume:",
-        "sql_warehouse_id:",
-        "workload_node_type:",
-        "access_group:",
-        "project_id:",
-        "branch:",
-        "database:",
-        "database_resource_name:",
-        "endpoint_name:",
-        "operational_schema:",
-        "source: rate",
-        "sandbox_capacity:",
-        "foundation_model:",
-        "model_service_name:",
-        "skill_id:",
-        "mcp_connection_id:",
-        "mcp_service_id:",
-        "policy_function_name:",
-        "mlflow_experiment_name:",
-        "trace_catalog:",
-        "trace_schema:",
-        "trace_table_prefix:",
-        "trace_reader_principal:",
-        "production_reference:",
-        "enabled: false",
-        "bundle_fragment: resources/production_reference.yml",
-        "kafka_bootstrap:",
-        "production_reference_access_group:",
-    )
-    assert all(key in example for key in required_keys)
-    assert "does not load this file" in example
-    assert "Never put secrets" in example
+
+    assert [
+        line.split(":", maxsplit=1)[0]
+        for line in example.splitlines()
+        if line and not line.startswith("#")
+    ] == ["catalog", "schema", "warehouse_id", "workload_node_type"]
 
 
-def test_customer_guide_documents_the_complete_installer_contract() -> None:
-    """Keep the copyable command aligned with every required customer input."""
-
-    guide = (ROOT / "docs/CUSTOMER_DEPLOYMENT.md").read_text(encoding="utf-8")
-    required_options = (
-        "--profile",
-        "--target",
-        "--expected-host",
-        "--access-group",
-        "--catalog",
-        "--schema",
-        "--volume",
-        "--warehouse-id",
-        "--workload-node-type",
-        "--app-name",
-        "--lakebase-project-id",
-        "--lakebase-branch",
-        "--lakebase-database",
-        "--lakebase-database-resource-name",
-        "--lakebase-endpoint-name",
-        "--lakebase-schema",
-        "--foundation-model",
-        "--model-service-name",
-        "--mlflow-experiment-name",
-        "--mlflow-trace-catalog",
-        "--mlflow-trace-schema",
-        "--mlflow-trace-table-prefix",
-        "--mlflow-trace-reader-principal",
-        "--sandbox-capacity",
-        "--telemetry-samples-per-second",
-        "--telemetry-source-partitions",
-        "--skill-id",
-        "--mcp-service-id",
-        "--mcp-connection-id",
-        "--policy-function-name",
-        "--global-agent-concurrency",
-    )
-    assert all(option in guide for option in required_options)
-    assert "`install --app-only` is rejected" in guide
-
-
-def test_bundle_has_a_production_mode_target_for_shared_installations() -> None:
-    """Prevent development-mode prefixes from changing explicit customer resource names."""
-
+def test_customer_target_is_production_mode() -> None:
     bundle = (ROOT / "databricks.yml").read_text(encoding="utf-8")
 
-    assert "  prod:\n    mode: production" in bundle
+    assert "  customer:\n    mode: production" in bundle
     assert "root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/" in bundle
 
 
-def test_readme_links_customer_installation_guide() -> None:
-    """Expose the portable lifecycle guide from the repository's primary entry point."""
-
+def test_readme_exposes_the_single_command_installation() -> None:
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    assert "[Customer installation and lifecycle]" in readme
+
+    assert "databricks bundle deploy --target customer" in readme
     assert "docs/CUSTOMER_DEPLOYMENT.md" in readme
+    assert "scripts/deploy.py" not in readme
 

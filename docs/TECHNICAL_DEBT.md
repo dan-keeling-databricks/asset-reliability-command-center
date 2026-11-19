@@ -65,24 +65,23 @@ drop metrics before production use.
 
 ### Stale frontend deployments and unknown build identity
 
-**Resolved.** `scripts/deploy.py` performs locked installs, the complete test/build gate, frontend
-freshness verification, clean-tree validation, generated App configuration, and deterministic
-build-info generation before the App snapshot is deployed. It readiness-gates the active Rate RTM
-job, grants the App service principal verified read access to synced bundle source, and exposes the
-deployed commit through `/api/build-info`.
+**Resolved.** The DAB artifact build performs a locked frontend install, builds the application,
+stages an allowlisted runtime tree, and writes deterministic source identity before the App
+snapshot is deployed. The App exposes the deployed commit through `/api/build-info`; repository
+tests and the maintainer gate verify artifact freshness and contents before a release is published.
 
 ### Architecture and runbook drift
 
 **Resolved.** README, demo narrative, architecture, deployment, task, debt, and evidence documents
 now describe personal Rate sandboxes, LangGraph, Unity Gateway Model Service, MLflow, strengthened
-governance, customer portability, and the repository-first deployment path.
+governance, customer portability, and the DAB-first deployment path.
 
 ### Bundle root used as the App snapshot
 
-**Resolved.** Deployment stages an allowlisted runtime tree under `.artifacts/app`, generates its
-environment-specific App manifest there, and snapshots only that directory. Tests prove that
-optional Genie definitions, job/pipeline source, development assets, and stale files do not enter
-the artifact.
+**Resolved.** The DAB artifact build stages an allowlisted runtime tree under `.artifacts/app` and
+the bundle supplies App configuration declaratively. DABs snapshots only that directory. Tests
+prove that optional Genie definitions, job/pipeline source, development assets, and stale files do
+not enter the artifact.
 
 ## Accepted design decisions
 

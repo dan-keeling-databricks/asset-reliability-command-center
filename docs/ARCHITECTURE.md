@@ -82,15 +82,15 @@ execution evidence.
 
 The standalone RTM job executes as the existing App service principal. A bundle-managed
 least-privilege compute policy limits it to the approved fixed-size classic shape, runtime and
-on-demand availability. A deployer-run, idempotent grant job gives that identity only the Unity
-Catalog Volume access required by the workload. The deployment helper also grants the service
-principal read access to the synced bundle source before the RTM restart.
+on-demand availability. A DAB-managed, idempotent setup job gives that identity only the Unity
+Catalog Volume access required by the workload. Runtime job source is pinned to the public Git
+commit selected by the bundle deployment.
 
 Lakebase schema upgrades use a separate one-shot classic job with the same App service-principal
 run-as identity. It applies the repository's idempotent PostgreSQL migration, verifies the exact
 lease and approval-claim columns required by current code, and must succeed before the deployment
-helper can restart the standalone RTM job. This preserves App ownership of the operational schema
-and prevents new workload source from racing an older database contract.
+starts the standalone RTM job. This preserves App ownership of the operational schema and prevents
+new workload source from racing an older database contract.
 
 ## Databricks App and autonomous AI experience
 
@@ -191,7 +191,7 @@ The generated root `.build-info.json` records the clean Git commit included in a
 App exposes it through `/api/build-info`. Deployment stages this file with only the App's runtime
 Python, compiled frontend, Lakebase migration, and dependency manifests under `.artifacts/app`.
 The App snapshot is rooted there so managed Genie workspace nodes and non-runtime bundle assets
-cannot enter the snapshot. Deployment is repository-first and manual through `scripts/deploy.py`.
+cannot enter the snapshot. Deployment is repository-first and driven by `databricks bundle deploy`.
 
 ## Repository map
 

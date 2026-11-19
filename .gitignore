@@ -1,5 +1,8 @@
 .DS_Store
-.artifacts/
+.artifacts/*
+!.artifacts/app/
+.artifacts/app/*
+!.artifacts/app/.gitkeep
 .build-info.json
 .databricks/
 .data/

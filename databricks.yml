@@ -1,6 +1,6 @@
 bundle:
   name: asset-reliability-command-center
-  databricks_cli_version: ">=1.17.0"
+  databricks_cli_version: ">=1.26.0"
   deployment:
     lock:
       enabled: true
@@ -10,10 +10,9 @@ variables:
     description: Unity Catalog catalog hosting the project schema.
   schema:
     description: Unity Catalog schema for checkpoints and governed assets.
-  workspace_host:
-    description: Workspace origin used when rendering the Databricks App manifest.
   app_name:
     description: Databricks App name for this installation.
+    default: asset-reliability-center
   volume:
     description: Managed volume for streaming checkpoints.
     default: runtime
@@ -32,20 +31,13 @@ variables:
     default: 4
   app_access_group:
     description: Existing workspace group admitted to the App; it does not assign product roles.
-  mlflow_trace_reader_principal:
-    description: Existing Unity Catalog principal granted read access to MLflow trace tables.
+    default: users
   lakebase_project_id:
     description: Lakebase Autoscaling project identifier for this installation.
-  lakebase_branch_name:
-    description: Lakebase branch containing the App database and endpoint.
-  lakebase_database_name:
-    description: PostgreSQL database name used by migration and streaming workloads.
-  lakebase_database_resource_name:
-    description: Lakebase database resource name used in the Databricks App attachment path.
-  lakebase_endpoint_name:
-    description: Lakebase endpoint name used by workloads.
+    default: asset-reliability-command-center
   lakebase_schema:
     description: PostgreSQL schema owned by the App.
+    default: asset_reliability
   foundation_model:
     description: Unity Catalog Foundation Model API model routed by the agent Model Service.
     default: system.ai.databricks-claude-sonnet-4-5
@@ -55,10 +47,6 @@ variables:
   mlflow_experiment_name:
     description: Absolute workspace path for LangGraph traces and GenAI evaluation runs.
     default: /Shared/asset-reliability-command-centre-agent
-  mlflow_trace_catalog:
-    description: Unity Catalog catalog that stores MLflow trace tables.
-  mlflow_trace_schema:
-    description: Unity Catalog schema that stores MLflow trace tables.
   mlflow_trace_table_prefix:
     description: Stable prefix for the Unity Catalog tables that persist MLflow traces.
     default: asset_reliability_agent
@@ -68,6 +56,9 @@ variables:
   governed_skill_name:
     description: Governed Unity Catalog Skill loaded by the agent.
     default: asset-reliability-response
+  mcp_connection_name:
+    description: Unity Catalog connection used by the governed MCP service.
+    default: asset_reliability_mcp_connection
   policy_function_name:
     description: Unity Catalog function used by the Unity Gateway service policy.
     default: submit_work_order_policy
@@ -78,22 +69,11 @@ variables:
 sync:
   include:
     - .artifacts/app/**
-    - backend/**
-    - frontend/dist/**
-    - skills/**
-    - src/**
     - sql/**
-    - app.yaml.template
-    - pyproject.toml
-    - uv.lock
-    - requirements.txt
-    - .build-info.json
-  exclude:
-    - .venv/**
-    - "**/__pycache__/**"
-    - "**/*.pyc"
-    - frontend/node_modules/**
-    - "frontend/*.tsbuildinfo"
+
+artifacts:
+  app:
+    build: ./scripts/build_app.sh
 
 resources:
   schemas:
@@ -221,11 +201,11 @@ resources:
               path: ./sql/grant_agent_observability.sql
             warehouse_id: ${var.warehouse_id}
             parameters:
-              catalog_name: ${var.mlflow_trace_catalog}
-              schema_name: ${var.mlflow_trace_schema}
+              catalog_name: ${var.catalog}
+              schema_name: ${var.schema}
               table_prefix: ${var.mlflow_trace_table_prefix}
               app_service_principal: ${resources.apps.command_center.service_principal_client_id}
-              trace_reader_principal: ${var.mlflow_trace_reader_principal}
+              trace_reader_principal: account users
 
     migrate_lakebase_schema:
       name: Asset Reliability — migrate App-owned Lakebase schema
@@ -251,10 +231,11 @@ resources:
         - task_key: apply_schema
           job_cluster_key: migration_cluster
           notebook_task:
-            notebook_path: ./src/migrations/apply_lakebase_schema.py
+            notebook_path: src/migrations/apply_lakebase_schema.py
+            source: GIT
             base_parameters:
-              lakebase_endpoint: projects/${var.lakebase_project_id}/branches/${var.lakebase_branch_name}/endpoints/${var.lakebase_endpoint_name}
-              lakebase_database: ${var.lakebase_database_name}
+              lakebase_endpoint: projects/${var.lakebase_project_id}/branches/production/endpoints/primary
+              lakebase_database: databricks_postgres
               lakebase_schema: ${var.lakebase_schema}
               sandbox_capacity: ${var.sandbox_capacity}
           libraries:
@@ -262,6 +243,10 @@ resources:
                 package: databricks-sdk==0.142.0
             - pypi:
                 package: psycopg[binary]==3.2.10
+      git_source:
+        git_url: https://github.com/dan-keeling-databricks/asset-reliability-command-center.git
+        git_provider: gitHub
+        git_commit: ${bundle.git.commit}
 
     telemetry_rtm:
       name: Asset Reliability — Spark Rate to Lakebase RTM
@@ -271,6 +256,9 @@ resources:
       max_concurrent_runs: 1
       run_as:
         service_principal_name: ${resources.apps.command_center.service_principal_client_id}
+      lifecycle:
+        depends_on:
+          - resource: job_runs.run_migrate_lakebase_schema
       job_clusters:
         - job_cluster_key: rtm_cluster
           new_cluster:
@@ -290,7 +278,8 @@ resources:
         - task_key: ingest_pump_telemetry
           job_cluster_key: rtm_cluster
           notebook_task:
-            notebook_path: ./src/streaming/rate_to_lakebase_rtm.py
+            notebook_path: src/streaming/rate_to_lakebase_rtm.py
+            source: GIT
             base_parameters:
               catalog: ${var.catalog}
               schema: ${var.schema}
@@ -298,13 +287,17 @@ resources:
               sandbox_capacity: ${var.sandbox_capacity}
               samples_per_second: ${var.telemetry_samples_per_second}
               source_partitions: ${var.telemetry_source_partitions}
-              lakebase_endpoint: projects/${var.lakebase_project_id}/branches/${var.lakebase_branch_name}/endpoints/${var.lakebase_endpoint_name}
-              lakebase_database: ${var.lakebase_database_name}
+              lakebase_endpoint: projects/${var.lakebase_project_id}/branches/production/endpoints/primary
+              lakebase_database: databricks_postgres
               lakebase_table: ${var.lakebase_schema}.telemetry_events
               # Demo-specific RTM epoch: the native Lakebase sink becomes visible at epoch
               # boundaries in this workspace, so ten seconds keeps the live UI responsive.
               trigger_interval: 10 seconds
               diagnostic_seconds: "0"
+      git_source:
+        git_url: https://github.com/dan-keeling-databricks/asset-reliability-command-center.git
+        git_provider: gitHub
+        git_commit: ${bundle.git.commit}
 
     evaluate_agent_traces:
       name: Asset Reliability — evaluate governed agent traces
@@ -330,7 +323,8 @@ resources:
         - task_key: evaluate_known_outcomes
           job_cluster_key: evaluation_cluster
           notebook_task:
-            notebook_path: ./src/evaluation/evaluate_agent_traces.py
+            notebook_path: src/evaluation/evaluate_agent_traces.py
+            source: GIT
             base_parameters:
               experiment_id: ${resources.experiments.agent_observability.id}
               sql_warehouse_id: ${var.warehouse_id}
@@ -338,6 +332,98 @@ resources:
           libraries:
             - pypi:
                 package: mlflow[databricks]>=3.18,<4
+      git_source:
+        git_url: https://github.com/dan-keeling-databricks/asset-reliability-command-center.git
+        git_provider: gitHub
+        git_commit: ${bundle.git.commit}
+
+    reconcile_governance:
+      name: Asset Reliability — reconcile governed Skill and MCP service
+      description: Creates the dynamic governance assets that are not yet represented by DAB resources.
+      run_as:
+        user_name: ${workspace.current_user.userName}
+      job_clusters:
+        - job_cluster_key: governance_cluster
+          new_cluster:
+            policy_id: ${resources.cluster_policies.asset_reliability_workloads.id}
+            spark_version: 17.3.x-scala2.13
+            node_type_id: ${var.workload_node_type}
+            num_workers: 0
+            data_security_mode: SINGLE_USER
+            enable_elastic_disk: true
+            spark_conf:
+              spark.master: local[*, 4]
+              spark.databricks.cluster.profile: singleNode
+            spark_env_vars:
+              ASSET_RELIABILITY_CATALOG: ${var.catalog}
+              ASSET_RELIABILITY_SCHEMA: ${var.schema}
+              ASSET_RELIABILITY_APP_NAME: ${var.app_name}
+              ASSET_RELIABILITY_SKILL_ID: ${var.governed_skill_name}
+              ASSET_RELIABILITY_MCP_CONNECTION_ID: ${var.mcp_connection_name}
+              ASSET_RELIABILITY_MCP_SERVICE_ID: ${var.mcp_service_name}
+              ASSET_RELIABILITY_POLICY_FUNCTION_NAME: ${var.policy_function_name}
+              ASSET_RELIABILITY_UC_AUDIENCE: account users
+            custom_tags:
+              ResourceClass: SingleNode
+              Workload: asset-reliability-governance
+      tasks:
+        - task_key: reconcile
+          job_cluster_key: governance_cluster
+          spark_python_task:
+            python_file: scripts/deploy_governance.py
+            source: GIT
+          libraries:
+            - pypi:
+                package: databricks-sdk==0.142.0
+            - pypi:
+                package: httpx==0.28.1
+      git_source:
+        git_url: https://github.com/dan-keeling-databricks/asset-reliability-command-center.git
+        git_provider: gitHub
+        git_commit: ${bundle.git.commit}
+
+  job_runs:
+    run_setup_unity_governance:
+      job_id: ${resources.jobs.setup_unity_governance.id}
+      lifecycle:
+        triggers:
+          - on_bundle_deploy: true
+
+    run_setup_runtime_principal_access:
+      job_id: ${resources.jobs.setup_runtime_principal_access.id}
+      lifecycle:
+        depends_on:
+          - resource: apps.command_center
+        triggers:
+          - on_bundle_deploy: true
+
+    run_migrate_lakebase_schema:
+      job_id: ${resources.jobs.migrate_lakebase_schema.id}
+      lifecycle:
+        depends_on:
+          - resource: job_runs.run_setup_runtime_principal_access
+        triggers:
+          - on_bundle_deploy: true
+
+    run_setup_agent_observability_access:
+      job_id: ${resources.jobs.setup_agent_observability_access.id}
+      lifecycle:
+        depends_on:
+          - resource: apps.command_center
+          - resource: experiments.agent_observability
+        triggers:
+          - on_bundle_deploy: true
+
+    run_reconcile_governance:
+      job_id: ${resources.jobs.reconcile_governance.id}
+      lifecycle:
+        depends_on:
+          - resource: apps.command_center
+          - resource: job_runs.run_setup_unity_governance
+          - resource: job_runs.run_migrate_lakebase_schema
+          - resource: job_runs.run_setup_agent_observability_access
+        triggers:
+          - on_bundle_deploy: true
 
   model_services:
     agent_model:
@@ -358,8 +444,8 @@ resources:
       name: ${var.mlflow_experiment_name}
       trace_location:
         uc_trace_location:
-          catalog: ${var.mlflow_trace_catalog}
-          schema: ${var.mlflow_trace_schema}
+          catalog: ${var.catalog}
+          schema: ${var.schema}
           table_prefix: ${var.mlflow_trace_table_prefix}
       tags:
         - key: application
@@ -376,19 +462,66 @@ resources:
     command_center:
       name: ${var.app_name}
       description: Autonomous and governed asset reliability command centre
+      config:
+        command:
+          - uvicorn
+          - backend.main:app
+          - --host
+          - 0.0.0.0
+          - --port
+          - "8000"
+        env:
+          - name: APP_ADAPTER
+            value: lakebase
+          - name: LAKEBASE_ENDPOINT
+            value_from: lakebase
+          - name: MODEL_ENDPOINT
+            value_from: agent-model-service
+          - name: MLFLOW_TRACKING_URI
+            value: databricks
+          - name: MLFLOW_EXPERIMENT_ID
+            value_from: agent-mlflow-experiment
+          - name: MLFLOW_TRACING_DESTINATION
+            value: ${var.catalog}.${var.schema}
+          - name: MLFLOW_TRACE_TABLE_PREFIX
+            value: ${var.mlflow_trace_table_prefix}
+          - name: MLFLOW_TRACING_SQL_WAREHOUSE_ID
+            value_from: sql-warehouse
+          - name: GOVERNED_MCP_ENDPOINT
+            value: ${workspace.host}/ai-gateway/mcp-services/${var.catalog}.${var.schema}.${var.mcp_service_name}
+          - name: GOVERNED_SKILL_ENDPOINT
+            value: ${workspace.host}/ai-gateway/skills/?schema=${var.catalog}.${var.schema}
+          - name: GOVERNED_SKILL_TOOL
+            value: skill_${var.catalog}.${var.schema}.${var.governed_skill_name}
+          - name: GOVERNED_SKILL_DOCUMENT_URL
+            value: ${workspace.host}/api/2.0/fs/files/Skills/${var.catalog}/${var.schema}/${var.governed_skill_name}/SKILL.md
+          - name: LAKEBASE_SCHEMA
+            value: ${var.lakebase_schema}
+          - name: GLOBAL_AGENT_CONCURRENCY
+            value: ${var.global_agent_concurrency}
+          - name: SSE_COALESCE_SECONDS
+            value: "0.05"
+          - name: TELEMETRY_RETENTION_SECONDS
+            value: "86400"
+          - name: TELEMETRY_RETENTION_INTERVAL_SECONDS
+            value: "300"
+          - name: TELEMETRY_RETENTION_BATCH_SIZE
+            value: "1000"
       permissions:
         - level: CAN_USE
           group_name: ${var.app_access_group}
       # Snapshot only the generated runtime artifact; jobs and governed assets remain separate.
       source_code_path: ./.artifacts/app
+      lifecycle:
+        started: true
       forward_user_access_token: true
       user_api_scopes:
         - ai-gateway
       resources:
         - name: lakebase
           postgres:
-            branch: projects/${resources.postgres_projects.asset_reliability_postgres.project_id}/branches/${var.lakebase_branch_name}
-            database: projects/${resources.postgres_projects.asset_reliability_postgres.project_id}/branches/${var.lakebase_branch_name}/databases/${var.lakebase_database_resource_name}
+            branch: projects/${resources.postgres_projects.asset_reliability_postgres.project_id}/branches/production
+            database: projects/${resources.postgres_projects.asset_reliability_postgres.project_id}/branches/production/databases/databricks-postgres
             permission: CAN_CONNECT_AND_CREATE
         - name: sql-warehouse
           sql_warehouse:
@@ -408,7 +541,7 @@ targets:
   dev:
     default: true
     mode: development
-  prod:
+  customer:
     mode: production
     workspace:
       root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}

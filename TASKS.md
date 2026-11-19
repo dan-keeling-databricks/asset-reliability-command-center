@@ -24,7 +24,7 @@ existing `classic_stable_realtime_demos_catalog` and dedicated
 | Production reference | Reproducible telemetry-only Genie definition and OBO adapter retained but hidden | Complete |
 | App | Personal live fleet, alerting, autonomous activity, history and incident timeline | Complete |
 | App | End-to-end health from connectivity, Rate RTM, telemetry and evaluator freshness | Complete |
-| Deployment | Customer-portable bundle, generated App manifest and checked lifecycle entry point | Complete |
+| Deployment | Customer-portable DAB, runtime-only App artifact and standard bundle entry point | Complete |
 | Deployment | Customer clean-install validation, Lakebase resource-ID guidance and frontend audit gate | Complete |
 | Documentation | Architecture, demo, deployment, debt, and evidence plan reconciled | Complete |
 
@@ -52,8 +52,7 @@ The feature commits on which this documentation is based include:
 
 The earlier Kafka command-centre build is deployed, with producer job `952037348530266` and RTM
 job `17156207332698`. The personal-sandbox Rate-source redesign must not be marked deployed until
-`scripts/deploy.py update` and the current
-[live acceptance checklist](docs/DEPLOYMENT.md) complete against the merged commit.
+the customer DAB target has been deployed from the merged commit.
 
 After that acceptance, replace this section with the actual:
 
@@ -67,7 +66,7 @@ After that acceptance, replace this section with the actual:
 ## Remaining work before validator submission
 
 1. Merge all approved feature branches into `main` and rerun the complete local gate.
-2. Run checked preflight, review the selected workspace/user/commit, then execute deployment.
+2. Deploy the customer DAB target with an explicit profile and high-level workspace variables.
 3. Complete two-user sandbox isolation, MCP denial, native approval and restart validation.
 4. Capture and commit the one-time sanitized text evidence package.
 5. Confirm repository access separately; presentation-deck work is intentionally outside this

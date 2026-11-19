@@ -114,117 +114,33 @@ identity, recovery and governance details.
 | `src/migrations/` and `sql/` | Idempotent operational schema and governed data assets |
 | `skills/` | Governed response procedure installed as a Unity Catalog Skill |
 | `resources/` | Optional production-reference bundle fragment |
-| `scripts/deploy.py` | Checked preflight, install and update entry point |
+| `scripts/build_app.sh` | DAB artifact build for the runtime-only App source |
 | `databricks.yml` | Parameterised Databricks resources |
 | `tests/` | Runtime, concurrency, governance and deployment-contract tests |
 
 ## Install in a customer workspace
 
-Installation is deliberately explicit. Git operations never deploy or change a Databricks
-workspace, and the installer never reads credentials from a values file. Authentication remains
-in the named Databricks CLI profile selected on every command.
-
-### 1. Confirm prerequisites
-
-The deploying operator needs:
-
-- Python 3.11 or later, `uv`, Node.js and npm;
-- Databricks CLI 1.17 or later, authenticated with OAuth under a named profile;
-- a workspace and region supporting Databricks Apps, Lakebase, Spark Real-Time Mode, Unity
-  Gateway, Foundation Model APIs and MLflow 3;
-- an existing Unity Catalog catalog, SQL warehouse and workspace App-access group;
-- permission to create or update the project schema, Volume, jobs, compute policy, App, Lakebase
-  resources, experiment, Model Service, governed Skill, MCP service and policy function; and
-- capacity for the fixed-size classic Spark Real-Time Mode workload.
-
-Cloud-specific node types and all workspace resource names are supplied at install time; they are
-not copied from the original demo workspace.
-
-### 2. Clone and prepare the source
+The customer chooses an existing catalog, a new project schema, a serverless SQL warehouse and an
+enabled classic node type. DABs derives the remaining names, builds the App and starts the complete
+demo.
 
 ```bash
 git clone https://github.com/dan-keeling-databricks/asset-reliability-command-center.git
 cd asset-reliability-command-center
-uv sync --locked
-npm --prefix frontend ci
-```
-
-Authenticate to the exact target and verify the profile before continuing:
-
-```bash
 databricks auth login \
   --host "https://<customer-workspace-host>" \
-  --profile "<customer-cli-profile>"
-databricks auth describe --profile "<customer-cli-profile>" -o json
+  --profile "<customer-profile>"
+
+export BUNDLE_VAR_catalog="<catalog>"
+export BUNDLE_VAR_schema="<new-project-schema>"
+export BUNDLE_VAR_warehouse_id="<sql-warehouse-id>"
+export BUNDLE_VAR_workload_node_type="<enabled-classic-node-type>"
+
+databricks bundle deploy --target customer --profile "<customer-profile>"
 ```
 
-Never rely on the default profile. Confirm that the returned host and user are the intended
-deployment target.
-
-### 3. Prepare customer values
-
-Copy the [customer configuration worksheet](docs/examples/customer-values.example.yml) to an
-ignored or external location and replace every angle-bracket placeholder. It records non-secret
-names and identifiers only; the deployment script does not load the file.
-
-The customer must choose:
-
-- target host, named CLI profile and bundle target;
-- catalog, project schema, checkpoint Volume, SQL warehouse and approved classic node type;
-- App name and existing workspace access group;
-- Lakebase project, branch, database, endpoint and operational schema names;
-- Foundation Model API model and Unity Gateway Model Service name;
-- MLflow experiment path, Unity Catalog trace location and trace-reader principal;
-- governed Skill, MCP connection/service and policy-function names; and
-- sandbox capacity, telemetry rate, source partitions and global agent concurrency.
-
-For a newly created Lakebase project, the PostgreSQL database name and database resource ID are
-different: use `databricks_postgres` and `databricks-postgres`, respectively. The customer
-guide includes discovery commands for reused projects and for node types enabled in the target
-subscription.
-
-The App's service principal is resolved from the App created in the target workspace. Do not
-copy a service-principal ID, token or secret from another environment.
-
-### 4. Run read-only preflight
-
-Use the complete, copyable command in the
-[customer deployment command template](docs/CUSTOMER_DEPLOYMENT.md#command-template), with the
-values from the worksheet and the operation set to `preflight`.
-
-Preflight does not mutate the workspace. It checks the explicit profile and expected host, runs
-the locked local quality gate, scans the staged App snapshot for excluded files and original
-environment hard-codes, and strictly validates the parameterised bundle. Stop if the printed
-host, user, source commit, App name or change scope is unexpected.
-
-### 5. Install and verify
-
-After reviewing successful preflight output, rerun the identical command with `install` in place
-of `preflight`. The installer reconciles the resources in dependency order: foundational bundle
-assets, Lakebase and its idempotent schema, Unity Catalog grants, Rate-to-Lakebase Real-Time Mode,
-Model Service and MLflow, governed Skill/MCP/policy, and finally the App snapshot.
-
-Installation success proves resource reconciliation, not the business journey. Before sharing
-the App, complete the [live acceptance checklist](docs/CUSTOMER_DEPLOYMENT.md#3-complete-live-acceptance):
-
-- confirm App build identity, platform health and fresh telemetry;
-- sign in as two users and prove sandbox isolation;
-- replay the one-shot P-202 and P-207 normal transients;
-- trigger P-204 and inspect genuine Skill, MCP, model and tool activity;
-- prove native `ASK`, one approved replay, one work order and one immutable receipt; and
-- open the persisted LangGraph trace and evaluation evidence in MLflow.
-
-### Updates, rollback and decommissioning
-
-Use `update` with the same explicit customer values for reviewed changes. App-only updates are
-supported only when every runtime change is inside the documented App snapshot boundary; data,
-governance, experiment or bundle changes require a complete update. Rollback is a forward deploy
-of a known-good commit, never a schema reversal or destructive Git operation. Decommissioning is
-manual so customer-owned catalogs, warehouses, groups and Lakebase resources are not removed by
-assumption.
-
-Read [Customer installation and lifecycle](docs/CUSTOMER_DEPLOYMENT.md) in full before operating
-a shared installation.
+See the short [customer installation guide](docs/CUSTOMER_DEPLOYMENT.md) for prerequisites and
+how to display the resulting App URL.
 
 ## Local development
 
@@ -249,7 +165,7 @@ uv run pytest
 npm --prefix frontend audit --audit-level=high
 npm --prefix frontend run typecheck
 npm --prefix frontend run build
-uv run python scripts/deploy.py --help
+databricks bundle validate --strict --target customer --profile <profile>
 ```
 
 The repository uses manual, reviewed deployment. A merge or Git push never deploys the App or any
@@ -288,7 +204,7 @@ The complete identifiers, SQL, tool sequence and governance receipt are in
 
 - [Business demo flow](DEMO.md)
 - [Technical architecture](docs/ARCHITECTURE.md)
-- [Customer installation and lifecycle](docs/CUSTOMER_DEPLOYMENT.md)
+- [Customer installation](docs/CUSTOMER_DEPLOYMENT.md)
 - [Customer configuration worksheet](docs/examples/customer-values.example.yml)
 - [Customer clean-install validation record](docs/CUSTOMER_INSTALL_VALIDATION.md)
 - [Manual deployment and live acceptance](docs/DEPLOYMENT.md)
