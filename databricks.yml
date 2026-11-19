@@ -167,6 +167,9 @@ resources:
   jobs:
     setup_unity_governance:
       name: Asset Reliability — create Unity Gateway policy function
+      lifecycle:
+        depends_on:
+          - resource: schemas.project_schema
       tasks:
         - task_key: create_policy_function
           sql_task:
@@ -430,6 +433,9 @@ resources:
       parent: schemas/${var.catalog}.${var.schema}
       model_service_id: ${var.model_service_name}
       comment: Governed Foundation Model API route for the Asset Reliability LangGraph agent.
+      lifecycle:
+        depends_on:
+          - resource: schemas.project_schema
       config:
         routing:
           destinations:
@@ -442,6 +448,9 @@ resources:
   experiments:
     agent_observability:
       name: ${var.mlflow_experiment_name}
+      lifecycle:
+        depends_on:
+          - resource: schemas.project_schema
       trace_location:
         uc_trace_location:
           catalog: ${var.catalog}

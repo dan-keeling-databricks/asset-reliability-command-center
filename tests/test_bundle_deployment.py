@@ -70,6 +70,19 @@ def test_bundle_deploy_runs_the_required_bootstrap_jobs() -> None:
     }
 
 
+def test_schema_backed_resources_have_explicit_creation_order() -> None:
+    resources = bundle()["resources"]
+
+    for resource in (
+        resources["jobs"]["setup_unity_governance"],
+        resources["model_services"]["agent_model"],
+        resources["experiments"]["agent_observability"],
+    ):
+        assert resource["lifecycle"]["depends_on"] == [
+            {"resource": "schemas.project_schema"}
+        ]
+
+
 def test_continuous_rtm_waits_for_the_lakebase_migration() -> None:
     rtm = bundle()["resources"]["jobs"]["telemetry_rtm"]
 
