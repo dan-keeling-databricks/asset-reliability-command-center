@@ -122,21 +122,35 @@ identity, recovery and governance details.
 
 The customer chooses an existing catalog, a new project schema, a serverless SQL warehouse and an
 enabled classic node type. DABs derives the remaining names, builds the App and starts the complete
-demo.
+demo. These are all the values that must be supplied:
+
+| Customer choice | Example value | Requirement |
+| --- | --- | --- |
+| Workspace host | `https://dbc-a1b2c3d4-e5f6.cloud.databricks.com` | URL of the target Databricks workspace |
+| CLI profile | `asset-reliability-demo` | Local name for the authenticated workspace profile |
+| `catalog` | `main` | Existing Unity Catalog catalog in which DABs can create a schema |
+| `schema` | `asset_reliability_demo` | New schema name dedicated to this installation |
+| `warehouse_id` | `a1b2c3d4e5f67890` | ID of an existing serverless SQL warehouse |
+| `workload_node_type` | `i3.xlarge` | Enabled classic-compute node type; for example, `Standard_D4ds_v5` on Azure |
+
+Replace the example values below with values from the target workspace. All other bundle
+variables have portable defaults in `databricks.yml`.
 
 ```bash
 git clone https://github.com/dan-keeling-databricks/asset-reliability-command-center.git
 cd asset-reliability-command-center
+
+DEMO_PROFILE="asset-reliability-demo"
 databricks auth login \
-  --host "https://<customer-workspace-host>" \
-  --profile "<customer-profile>"
+  --host "https://dbc-a1b2c3d4-e5f6.cloud.databricks.com" \
+  --profile "${DEMO_PROFILE}"
 
-export BUNDLE_VAR_catalog="<catalog>"
-export BUNDLE_VAR_schema="<new-project-schema>"
-export BUNDLE_VAR_warehouse_id="<sql-warehouse-id>"
-export BUNDLE_VAR_workload_node_type="<enabled-classic-node-type>"
+export BUNDLE_VAR_catalog="main"
+export BUNDLE_VAR_schema="asset_reliability_demo"
+export BUNDLE_VAR_warehouse_id="a1b2c3d4e5f67890"
+export BUNDLE_VAR_workload_node_type="i3.xlarge"
 
-databricks bundle deploy --target customer --profile "<customer-profile>"
+databricks bundle deploy --target customer --profile "${DEMO_PROFILE}"
 ```
 
 See the short [customer installation guide](docs/CUSTOMER_DEPLOYMENT.md) for prerequisites and
