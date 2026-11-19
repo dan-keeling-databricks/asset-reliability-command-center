@@ -11,13 +11,12 @@ credential is retained.
 Each clean-room cycle must:
 
 1. begin with no project App, jobs, Lakebase project, schema or governed agent assets;
-2. discover the workspace catalog, warehouse, App group, enabled node type and available model;
-3. run the documented read-only `preflight`;
-4. run the same inputs through `install`;
-5. verify App, RTM, Skill, MCP, Model Service, native-`ASK` and MLflow resources;
-6. record every instruction, code and platform issue;
-7. remove only the demo-owned resources; and
-8. repeat from the revised published instructions without an undocumented correction.
+2. clone the public repository and select the four documented customer-owned values;
+3. run only `databricks bundle deploy --target customer --profile <profile>`;
+4. verify App, RTM, Skill, MCP, Model Service, native-`ASK` and MLflow resources;
+5. record every instruction, code and platform issue;
+6. remove only the demo-owned resources; and
+7. repeat from the revised published instructions without an undocumented correction.
 
 ## Attempt 1 — fresh Azure FEVM workspace
 
@@ -115,3 +114,64 @@ The revised public instructions now produce a clean customer installation from a
 without undocumented corrections. The installation guide is therefore clean-install validated.
 This result proves reproducible installation; it does not replace the separate authenticated
 business-journey acceptance checklist in `docs/DEPLOYMENT.md`.
+
+## DAB-first validation — attempts 3–8
+
+- Final source: `78236295276f429453de525c9bfeb21457b3e46d`
+- Date: 2026-11-19
+- Target: dedicated Azure clean-install workspace, customer bundle target
+
+This cycle replaced the deployment wrapper with the documented four variables and one standard
+command. Each code failure was fixed on a feature branch, merged to `main`, published to the public
+repository, and retested from a new anonymous clone after removing the exact partial installation.
+
+### Findings and fixes
+
+| ID | Observation | Classification | Resolution |
+| --- | --- | --- | --- |
+| CI-008 | A truly clean clone had no `.artifacts/app` directory, so DAB rejected the App source path before running its artifact build. | Packaging defect | Track `.artifacts/app/.gitkeep`; the builder recreates it while staging the runtime-only App. |
+| CI-009 | MLflow experiment creation raced the new Unity Catalog schema and returned `SCHEMA_DOES_NOT_EXIST`. | DAB dependency defect | Add explicit schema dependencies for the experiment, Model Service and policy-function setup job. |
+| CI-010 | Jobs configured to impersonate the generated App principal required an account-level `servicePrincipal.user` grant that DAB does not represent. | Portability defect | Keep App-owned Lakebase migration in App startup and run bundle workloads as the deploying owner of the dedicated demo; remove the redundant migration/grant jobs and second cold start. |
+| CI-011 | A Git-backed Spark Python task did not define `__file__`, so governance could not locate the Skill source. | Runtime compatibility defect | Resolve the checked-out Skill from bounded working-directory ancestors, with module-path support for ordinary Python. |
+| CI-012 | The first OAuth exchange for a newly created App credential can return transient `invalid_request`. | Platform propagation gotcha | Retry only that exact transient connection-provisioning failure with bounded backoff; never log or persist the credential. |
+| CI-013 | Classic compute made governance reconciliation spend several minutes waiting for a cluster. | Installation latency | Move the Python task to serverless jobs compute with environment version `4`, pinned dependencies, ambient authentication and explicit task arguments. Final setup took 4 seconds and execution 38 seconds. |
+| CI-014 | Serverless Python already hosts an asyncio loop, so the final blocking Gateway probe could not call `asyncio.run()` directly. | Runtime compatibility defect | Run the unchanged coroutine in an isolated thread only when an event loop is already active. |
+| CI-015 | One attempt lost local DNS while DAB polled an App that subsequently started successfully; the same outage prevented state upload. | External transient | Remove the exact partial resources and restart from an empty target. No code or instruction change was attributed to this network event. |
+
+### Final clean installation
+
+The workspace inventory was empty, including the exact purged Lakebase project tombstone. A new
+anonymous clone resolved to the final source above. The only command after setting the four
+documented `BUNDLE_VAR_*` values was:
+
+```bash
+databricks bundle deploy --target customer \
+  --profile asset-reliability-clean-install
+```
+
+DAB reported `17 created, 0 changed, 0 deleted, 0 unchanged` and exited successfully. No
+out-of-band resource mutation or undocumented argument was needed.
+
+### Verified installation evidence
+
+- App deployment `01f1e3fa52c61839ae23fe49669e30dc` is `SUCCEEDED`; App and compute are
+  `RUNNING`/`ACTIVE`. The deployed build file reports the final source commit exactly.
+- Continuous RTM job `322085105051931`, parent run `478309374586096` and task run
+  `1007233743665420` are running. The task uses Git commit `7823629`, Spark Real-Time Mode,
+  Spark Rate, the configured Lakebase sink and Unity Catalog checkpoint Volume.
+- Serverless governance parent run `869989528755619` succeeded in 42.5 seconds, including four
+  seconds of setup. It used environment version `4` and the exact public Git commit.
+- The governed Skill is finalised. The MCP connection is `ACTIVE` and the service exposes exactly
+  `get_asset_telemetry`, `assess_failure_risk`, `prepare_work_order` and `submit_work_order`.
+- The live non-executing probe verified the source-context guard and returned native `ASK` for
+  `submit_work_order` with `execution: not executed`.
+- The Model Service routes 100% of traffic to
+  `system.ai.databricks-claude-sonnet-4-5` through the Foundation Model API.
+- MLflow experiment `2893862182929729` points to the project schema and has all six managed trace
+  tables/views (`otel_annotations`, `otel_logs`, `otel_metrics`, `otel_spans`, `trace_metadata`,
+  and `trace_unified`).
+- App startup completed without a runtime error, and the live MCP proxy calls used by governance
+  returned HTTP 200.
+
+This is the current DAB-first clean-install baseline. Authenticated user journeys and creation of
+new business traces remain demo acceptance activities, not installation-time fabricated evidence.
