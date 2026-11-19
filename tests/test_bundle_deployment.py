@@ -80,6 +80,35 @@ def test_schema_backed_resources_have_explicit_creation_order() -> None:
         ]
 
 
+def test_governance_reconciliation_uses_serverless_compute() -> None:
+    job = bundle()["resources"]["jobs"]["reconcile_governance"]
+    task = job["tasks"][0]
+
+    assert "job_clusters" not in job
+    assert "libraries" not in task
+    assert task["environment_key"] == "governance"
+    assert job["environments"] == [
+        {
+            "environment_key": "governance",
+            "spec": {
+                "client": "4",
+                "dependencies": ["databricks-sdk==0.142.0", "httpx==0.28.1"],
+            },
+        }
+    ]
+    parameters = task["spark_python_task"]["parameters"]
+    assert parameters[::2] == [
+        "--catalog",
+        "--schema",
+        "--app-name",
+        "--skill-id",
+        "--connection-id",
+        "--service-id",
+        "--policy-function-name",
+        "--uc-audience",
+    ]
+
+
 def test_continuous_rtm_waits_for_the_app_owned_lakebase_schema() -> None:
     rtm = bundle()["resources"]["jobs"]["telemetry_rtm"]
 

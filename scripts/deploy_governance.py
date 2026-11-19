@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 import os
@@ -80,6 +81,38 @@ class GovernanceConfig:
             "uc_audience": "ASSET_RELIABILITY_UC_AUDIENCE",
         }
         values = {field: os.getenv(variable, "").strip() for field, variable in names.items()}
+        missing = [names[field] for field, value in values.items() if not value]
+        if missing:
+            raise RuntimeError(
+                "Missing explicit governance deployment settings: " + ", ".join(missing)
+            )
+        return cls(
+            profile=os.getenv("DATABRICKS_CONFIG_PROFILE", "").strip() or None,
+            **values,
+        )
+
+    @classmethod
+    def from_arguments(cls, argv: list[str] | None = None) -> GovernanceConfig:
+        """Resolve explicit DAB task parameters while retaining local environment support."""
+
+        names = {
+            "catalog": "ASSET_RELIABILITY_CATALOG",
+            "schema": "ASSET_RELIABILITY_SCHEMA",
+            "app_name": "ASSET_RELIABILITY_APP_NAME",
+            "skill_id": "ASSET_RELIABILITY_SKILL_ID",
+            "connection_id": "ASSET_RELIABILITY_MCP_CONNECTION_ID",
+            "service_id": "ASSET_RELIABILITY_MCP_SERVICE_ID",
+            "policy_function_name": "ASSET_RELIABILITY_POLICY_FUNCTION_NAME",
+            "uc_audience": "ASSET_RELIABILITY_UC_AUDIENCE",
+        }
+        parser = argparse.ArgumentParser(description=__doc__)
+        for field in names:
+            parser.add_argument(f"--{field.replace('_', '-')}")
+        parsed = vars(parser.parse_args(argv))
+        values = {
+            field: str(parsed[field] or os.getenv(variable, "")).strip()
+            for field, variable in names.items()
+        }
         missing = [names[field] for field, value in values.items() if not value]
         if missing:
             raise RuntimeError(
@@ -471,7 +504,7 @@ async def probe_submit_policy(
 def main() -> None:
     """Deploy governance dependencies in their required dependency order."""
 
-    config = GovernanceConfig.from_environment()
+    config = GovernanceConfig.from_arguments()
     client = WorkspaceClient(profile=config.profile) if config.profile else WorkspaceClient()
     app = client.apps.get(config.app_name)
     if not app.url or not app.service_principal_id or not app.service_principal_client_id:

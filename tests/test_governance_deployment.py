@@ -70,6 +70,36 @@ def test_governance_configuration_has_no_maintainer_defaults(monkeypatch) -> Non
     assert resolved.service_fqn == "customer_catalog.asset_reliability.customer_service"
 
 
+def test_serverless_task_arguments_resolve_without_profile(monkeypatch) -> None:
+    monkeypatch.delenv("DATABRICKS_CONFIG_PROFILE", raising=False)
+
+    resolved = GovernanceConfig.from_arguments(
+        [
+            "--catalog",
+            "customer_catalog",
+            "--schema",
+            "asset_reliability",
+            "--app-name",
+            "customer-app",
+            "--skill-id",
+            "asset-reliability-response",
+            "--connection-id",
+            "customer-connection",
+            "--service-id",
+            "customer-service",
+            "--policy-function-name",
+            "customer-policy",
+            "--uc-audience",
+            "account users",
+        ]
+    )
+
+    assert resolved.profile is None
+    assert resolved.catalog == "customer_catalog"
+    assert resolved.service_fqn == "customer_catalog.asset_reliability.customer-service"
+    assert resolved.uc_audience == "account users"
+
+
 def test_user_permissions_cover_skill_and_gateway_without_genie_data() -> None:
     updates: list[tuple[str, str, list]] = []
 

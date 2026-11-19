@@ -89,6 +89,8 @@ The App applies the idempotent Lakebase migration during startup as its own serv
 preserving App ownership of the operational schema. DAB waits for the App to start before creating
 the continuous RTM job, so telemetry cannot race an older database contract. This avoids a second
 classic-compute cold start and any account-level impersonation grant during customer installation.
+Governance reconciliation runs on serverless jobs compute with ambient workload authentication;
+it still blocks deployment until the Skill, MCP service, policy and non-executing probe validate.
 
 ## Databricks App and autonomous AI experience
 

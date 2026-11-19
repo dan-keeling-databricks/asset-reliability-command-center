@@ -19,7 +19,7 @@ variables:
   warehouse_id:
     description: Serverless SQL warehouse used for setup and policy functions.
   workload_node_type:
-    description: Cloud-specific classic compute node type for migration, RTM and evaluation.
+    description: Cloud-specific classic compute node type for RTM and evaluation.
   sandbox_capacity:
     description: Maximum number of concurrently allocated personal telemetry sandboxes.
     default: 32
@@ -285,41 +285,36 @@ resources:
       description: Creates the dynamic governance assets that are not yet represented by DAB resources.
       run_as:
         user_name: ${workspace.current_user.userName}
-      job_clusters:
-        - job_cluster_key: governance_cluster
-          new_cluster:
-            policy_id: ${resources.cluster_policies.asset_reliability_workloads.id}
-            spark_version: 17.3.x-scala2.13
-            node_type_id: ${var.workload_node_type}
-            num_workers: 0
-            data_security_mode: SINGLE_USER
-            enable_elastic_disk: true
-            spark_conf:
-              spark.master: local[*, 4]
-              spark.databricks.cluster.profile: singleNode
-            spark_env_vars:
-              ASSET_RELIABILITY_CATALOG: ${var.catalog}
-              ASSET_RELIABILITY_SCHEMA: ${var.schema}
-              ASSET_RELIABILITY_APP_NAME: ${var.app_name}
-              ASSET_RELIABILITY_SKILL_ID: ${var.governed_skill_name}
-              ASSET_RELIABILITY_MCP_CONNECTION_ID: ${var.mcp_connection_name}
-              ASSET_RELIABILITY_MCP_SERVICE_ID: ${var.mcp_service_name}
-              ASSET_RELIABILITY_POLICY_FUNCTION_NAME: ${var.policy_function_name}
-              ASSET_RELIABILITY_UC_AUDIENCE: account users
-            custom_tags:
-              ResourceClass: SingleNode
-              Workload: asset-reliability-governance
+      environments:
+        - environment_key: governance
+          spec:
+            client: "4"
+            dependencies:
+              - databricks-sdk==0.142.0
+              - httpx==0.28.1
       tasks:
         - task_key: reconcile
-          job_cluster_key: governance_cluster
+          environment_key: governance
           spark_python_task:
             python_file: scripts/deploy_governance.py
             source: GIT
-          libraries:
-            - pypi:
-                package: databricks-sdk==0.142.0
-            - pypi:
-                package: httpx==0.28.1
+            parameters:
+              - --catalog
+              - ${var.catalog}
+              - --schema
+              - ${var.schema}
+              - --app-name
+              - ${var.app_name}
+              - --skill-id
+              - ${var.governed_skill_name}
+              - --connection-id
+              - ${var.mcp_connection_name}
+              - --service-id
+              - ${var.mcp_service_name}
+              - --policy-function-name
+              - ${var.policy_function_name}
+              - --uc-audience
+              - account users
       git_source:
         git_url: https://github.com/dan-keeling-databricks/asset-reliability-command-center.git
         git_provider: gitHub

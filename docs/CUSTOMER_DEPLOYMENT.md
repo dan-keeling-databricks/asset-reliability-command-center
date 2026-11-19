@@ -59,8 +59,9 @@ databricks bundle deploy --target customer --profile "<customer-profile>"
 
 The command builds the React application, creates the Databricks resources, applies the Lakebase
 schema, starts continuous Spark Rate telemetry, publishes the governed Skill and MCP service, and
-starts the App. Initial classic-compute startup can take several minutes; the command waits for
-the required setup runs to finish.
+starts the App. The governance reconciliation uses serverless jobs compute, and the command waits
+for its Skill, MCP and native-policy validation to finish. Continuous RTM classic compute can take
+several minutes to begin producing telemetry after the deployment returns.
 
 Display the installed resources and App URL:
 
